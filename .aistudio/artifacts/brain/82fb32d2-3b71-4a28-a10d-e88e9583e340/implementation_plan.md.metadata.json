@@ -1,0 +1,6 @@
+{
+  "summary": "Updated plan adding complete GitHub Actions CI/CD workflow (.github/workflows/build-windows.yml), self-contained Go repository structure, and automated Wintun bundling for immediate compilation on GitHub.",
+  "updatedAt": "2026-10-14T18:08:24.100109709Z",
+  "requestFeedback": true,
+  "userFacing": true
+}

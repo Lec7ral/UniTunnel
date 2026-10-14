@@ -1,0 +1,24 @@
+{
+  "proxy_host": "10.0.0.1",
+  "proxy_port": 8080,
+  "auth_type": "auto",
+  "username": "tu_usuario_universitario",
+  "domain": "",
+  "password": "tu_password",
+  "local_socks_port": 1080,
+  "local_http_port": 8081,
+  "capture_mode": "tun",
+  "tun_name": "UniTunnel0",
+  "tun_ipv4": "10.254.1.2",
+  "tun_mask": "255.255.255.0",
+  "tun_dns": "1.1.1.1,8.8.8.8",
+  "bypass_routes": [
+    "10.0.0.0/8",
+    "172.16.0.0/12",
+    "192.168.0.0/16"
+  ],
+  "vps_enabled": false,
+  "vps_server": "vps.ejemplo.com:443",
+  "vps_secret": "clave_vps_opcional",
+  "auto_start": false
+}

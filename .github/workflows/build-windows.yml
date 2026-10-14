@@ -1,0 +1,90 @@
+name: Build Windows Application (UniTunnel)
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch: # Allows manual trigger from GitHub Actions UI
+
+jobs:
+  build-windows:
+    name: Build UniTunnel for Windows (x64)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          check-latest: true
+          cache-dependency-path: unitunnel-go/go.sum
+
+      - name: Verify MinGW GCC (Cgo support for Fyne)
+        run: |
+          gcc --version
+
+      - name: Download Wintun Driver DLL (x64)
+        run: |
+          # Create dist folder
+          New-Item -ItemType Directory -Force -Path dist
+          
+          # Download official Wintun 0.14.1 release zip from wireguard
+          Write-Host "Downloading official Wintun release..."
+          Invoke-WebRequest -Uri "https://www.wintun.net/builds/wintun-0.14.1.zip" -OutFile "dist\wintun.zip"
+          
+          # Extract wintun.dll for amd64
+          Expand-Archive -Path "dist\wintun.zip" -DestinationPath "dist\wintun_extracted" -Force
+          Copy-Item -Path "dist\wintun_extracted\wintun\bin\amd64\wintun.dll" -Destination "dist\wintun.dll" -Force
+          
+          # Clean up zip
+          Remove-Item -Recurse -Force "dist\wintun_extracted", "dist\wintun.zip"
+          Write-Host "Wintun.dll successfully placed in dist folder."
+
+      - name: Build UniTunnel Go Executable (Fyne GUI + Wintun)
+        working-directory: ./unitunnel-go
+        run: |
+          # Enable CGO for Fyne OpenGL and Win32 bindings
+          $env:CGO_ENABLED="1"
+          
+          # Tidy dependencies
+          go mod tidy
+          
+          # Compile without opening background CMD console (-H windowsgui)
+          # -s -w strips debug symbols for smaller binary size (~15MB instead of 40MB)
+          go build -ldflags="-H windowsgui -s -w" -o ..\dist\unitunnel.exe .\cmd\unitunnel
+          
+          Write-Host "Build complete: dist\unitunnel.exe"
+
+      - name: Prepare Release Distribution Package
+        run: |
+          # Copy default config file
+          Copy-Item -Path "unitunnel-go\config.example.json" -Destination "dist\config.json"
+          
+          # Create a README for end users
+          @"
+          =======================================================
+          UniTunnel - Acceso Universitario para Windows
+          =======================================================
+          
+          REQUISITOS:
+          1. Ejecutar SIEMPRE 'unitunnel.exe' como Administrador (clic derecho -> Ejecutar como administrador).
+             Esto es indispensable para que Windows permita inicializar el adaptador virtual Wintun y las rutas IP.
+          2. Mantener 'wintun.dll' en la misma carpeta que 'unitunnel.exe'.
+          3. 'config.json' se crea o actualiza automaticamente con tus credenciales y servidor proxy (10.0.0.1:8080).
+          
+          MODOS DISPONIBLES:
+          - Modo TUN Virtual: Captura 100% de apps (Git, Discord, Juegos, Terminal, Navegadores).
+          - Modo Proxy Sistema: Configura 127.0.0.1:1080 en la configuracion de red de Windows.
+          =======================================================
+          "@ | Out-File -FilePath "dist\LEEME.txt" -Encoding utf8
+
+      - name: Upload Build Artifacts (ZIP)
+        uses: actions/upload-artifact@v4
+        with:
+          name: unitunnel-windows-x64
+          path: dist/
+          retention-days: 30
