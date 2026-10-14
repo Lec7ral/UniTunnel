@@ -5,6 +5,7 @@ package tun
 import (
 	"fmt"
 	"os/exec"
+	"strings"
 	"syscall"
 	"time"
 
@@ -71,12 +72,34 @@ func OpenWintun(cfg *config.Config) (*WintunDevice, error) {
 }
 
 func (w *WintunDevice) setupRoutes() {
-	// Add route to proxy server 10.0.0.1 directly via physical gateway
-	_ = exec.Command("route", "add", w.cfg.ProxyHost, "mask", "255.255.255.255", "10.0.0.1", "metric", "5").Run()
+	// Detect the current physical default gateway (e.g. your Ethernet gateway)
+	gw := getDefaultGateway()
+	if gw == "" {
+		gw = w.cfg.ProxyHost
+	}
 
-	// Route 0.0.0.0/1 and 128.0.0.0/1 through TUN gateway 10.254.1.2
+	// 1. Direct static route to proxy server (10.0.0.1) via physical gateway to prevent loops
+	_ = exec.Command("route", "add", w.cfg.ProxyHost, "mask", "255.255.255.255", gw, "metric", "5").Run()
+
+	// 2. Route all Internet traffic (0.0.0.0/1 and 128.0.0.0/1) through virtual Wintun adapter
 	_ = exec.Command("route", "add", "0.0.0.0", "mask", "128.0.0.0", w.cfg.TunIPv4, "metric", "1").Run()
 	_ = exec.Command("route", "add", "128.0.0.0", "mask", "128.0.0.0", w.cfg.TunIPv4, "metric", "1").Run()
+}
+
+func getDefaultGateway() string {
+	out, err := exec.Command("route", "print", "0.0.0.0").Output()
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(string(out), "\n")
+	for _, line := range lines {
+		fields := strings.Fields(line)
+		if len(fields) >= 5 && fields[0] == "0.0.0.0" && fields[1] == "0.0.0.0" {
+			// fields[2] is Gateway IP on Windows
+			return fields[2]
+		}
+	}
+	return ""
 }
 
 func (w *WintunDevice) clearRoutes() {
