@@ -21,7 +21,6 @@ jobs:
         with:
           go-version: '1.22'
           check-latest: true
-          cache-dependency-path: unitunnel-go/go.sum
 
       - name: Verify MinGW GCC (Cgo support for Fyne)
         run: |

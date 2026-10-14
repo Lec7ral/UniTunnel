@@ -4,9 +4,6 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net"
-	"net/http"
-	"net/url"
-	"time"
 
 	"unitunnel/pkg/config"
 )

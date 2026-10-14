@@ -5,7 +5,6 @@ package sysproxy
 import (
 	"fmt"
 	"syscall"
-	"unsafe"
 	"golang.org/x/sys/windows/registry"
 )
 

@@ -2,7 +2,6 @@ package tunnel
 
 import (
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"io"
 	"net"
