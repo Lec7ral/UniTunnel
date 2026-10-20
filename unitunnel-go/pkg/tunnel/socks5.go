@@ -7,6 +7,8 @@ import (
 	"net"
 	"strconv"
 	"sync"
+
+	"unitunnel/pkg/traffic"
 )
 
 // SOCKS5Server runs a local SOCKS5 server that dials out via the authenticated HTTP CONNECT dialer
@@ -155,5 +157,5 @@ func (s *SOCKS5Server) handleClient(conn net.Conn) {
 		s.OnEvent(fmt.Sprintf("[Túnel OK] Conectado a %s a través de 10.0.0.1:8080", target))
 	}
 
-	Pipe(conn, remoteConn)
+	traffic.CountingPipe(conn, remoteConn)
 }

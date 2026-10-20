@@ -2,9 +2,16 @@
   "proxy_host": "10.0.0.1",
   "proxy_port": 8080,
   "auth_type": "auto",
-  "username": "tu_usuario_universitario",
-  "domain": "",
-  "password": "tu_password",
+  "active_account_id": "acc_1",
+  "accounts": [
+    {
+      "id": "acc_1",
+      "name": "Cuenta Personal",
+      "username": "",
+      "domain": "",
+      "password": ""
+    }
+  ],
   "local_socks_port": 1080,
   "local_http_port": 8081,
   "capture_mode": "tun",
@@ -18,7 +25,8 @@
     "192.168.0.0/16"
   ],
   "vps_enabled": false,
-  "vps_server": "vps.ejemplo.com:443",
-  "vps_secret": "clave_vps_opcional",
+  "vps_server": "",
+  "vps_secret": "",
+  "start_minimized": true,
   "auto_start": false
 }

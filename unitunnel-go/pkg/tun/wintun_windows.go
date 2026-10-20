@@ -16,6 +16,30 @@ var (
 	wintunDLL = syscall.NewLazyDLL("wintun.dll")
 )
 
+const (
+	CREATE_NO_WINDOW = 0x08000000
+)
+
+// runHidden executes commands completely hidden without flashing any CMD/console window
+func runHidden(name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		HideWindow:    true,
+		CreationFlags: CREATE_NO_WINDOW,
+	}
+	return cmd.Run()
+}
+
+// outputHidden captures output while keeping the process completely windowless
+func outputHidden(name string, args ...string) ([]byte, error) {
+	cmd := exec.Command(name, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		HideWindow:    true,
+		CreationFlags: CREATE_NO_WINDOW,
+	}
+	return cmd.Output()
+}
+
 type WintunDevice struct {
 	Name      string
 	Interface string
@@ -41,53 +65,48 @@ func OpenWintun(cfg *config.Config) (*WintunDevice, error) {
 		cfg:       cfg,
 	}
 
-	// Configure IP on Wintun adapter using netsh
-	// netsh interface ip set address name="UniTunnel0" static 10.254.1.2 255.255.255.0 10.254.1.1
-	ipCmd := exec.Command("netsh", "interface", "ip", "set", "address",
+	// Configure IP on Wintun adapter using netsh (completely windowless)
+	_ = runHidden("netsh", "interface", "ip", "set", "address",
 		fmt.Sprintf("name=\"%s\"", adapterName),
 		"static",
 		cfg.TunIPv4,
 		cfg.TunMask,
 		"none",
 	)
-	_ = ipCmd.Run()
 
 	// Wait 200ms for Windows interface stack to come up
 	time.Sleep(200 * time.Millisecond)
 
-	// Set DNS servers on virtual adapter
-	dnsCmd := exec.Command("netsh", "interface", "ip", "set", "dns",
+	// Set DNS servers on virtual adapter (windowless)
+	_ = runHidden("netsh", "interface", "ip", "set", "dns",
 		fmt.Sprintf("name=\"%s\"", adapterName),
 		"static",
 		"1.1.1.1",
 	)
-	_ = dnsCmd.Run()
 
-	// CRITICAL ROUTING TRICK (prevent proxy loop):
-	// 1. Explicit static route to university proxy 10.0.0.1 via default gateway
-	// 2. Redirect internet traffic into Wintun via 0.0.0.0/1 and 128.0.0.0/1
+	// Direct static routes without popping any CMD window
 	dev.setupRoutes()
 
 	return dev, nil
 }
 
 func (w *WintunDevice) setupRoutes() {
-	// Detect the current physical default gateway (e.g. your Ethernet gateway)
+	// Detect physical gateway
 	gw := getDefaultGateway()
 	if gw == "" {
 		gw = w.cfg.ProxyHost
 	}
 
 	// 1. Direct static route to proxy server (10.0.0.1) via physical gateway to prevent loops
-	_ = exec.Command("route", "add", w.cfg.ProxyHost, "mask", "255.255.255.255", gw, "metric", "5").Run()
+	_ = runHidden("route", "add", w.cfg.ProxyHost, "mask", "255.255.255.255", gw, "metric", "5")
 
 	// 2. Route all Internet traffic (0.0.0.0/1 and 128.0.0.0/1) through virtual Wintun adapter
-	_ = exec.Command("route", "add", "0.0.0.0", "mask", "128.0.0.0", w.cfg.TunIPv4, "metric", "1").Run()
-	_ = exec.Command("route", "add", "128.0.0.0", "mask", "128.0.0.0", w.cfg.TunIPv4, "metric", "1").Run()
+	_ = runHidden("route", "add", "0.0.0.0", "mask", "128.0.0.0", w.cfg.TunIPv4, "metric", "1")
+	_ = runHidden("route", "add", "128.0.0.0", "mask", "128.0.0.0", w.cfg.TunIPv4, "metric", "1")
 }
 
 func getDefaultGateway() string {
-	out, err := exec.Command("route", "print", "0.0.0.0").Output()
+	out, err := outputHidden("route", "print", "0.0.0.0")
 	if err != nil {
 		return ""
 	}
@@ -103,9 +122,9 @@ func getDefaultGateway() string {
 }
 
 func (w *WintunDevice) clearRoutes() {
-	_ = exec.Command("route", "delete", "0.0.0.0", "mask", "128.0.0.0", w.cfg.TunIPv4).Run()
-	_ = exec.Command("route", "delete", "128.0.0.0", "mask", "128.0.0.0", w.cfg.TunIPv4).Run()
-	_ = exec.Command("route", "delete", w.cfg.ProxyHost, "mask", "255.255.255.255").Run()
+	_ = runHidden("route", "delete", "0.0.0.0", "mask", "128.0.0.0", w.cfg.TunIPv4)
+	_ = runHidden("route", "delete", "128.0.0.0", "mask", "128.0.0.0", w.cfg.TunIPv4)
+	_ = runHidden("route", "delete", w.cfg.ProxyHost, "mask", "255.255.255.255")
 }
 
 func (w *WintunDevice) Close() error {

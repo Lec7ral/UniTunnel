@@ -38,15 +38,17 @@ func (d *Dialer) Dial(network, targetAddr string) (net.Conn, error) {
 		return nil, fmt.Errorf("error al conectar con el proxy universitario %s: %w", proxyAddr, err)
 	}
 
+	account := d.cfg.GetActiveAccount()
+
 	// Step 1: Initial CONNECT request
 	connectReq := fmt.Sprintf("CONNECT %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: UniTunnel/1.0\r\nProxy-Connection: keep-alive\r\n", targetAddr, targetAddr)
 
 	// If scheme is basic or user specified credentials
-	if d.cfg.Username != "" && d.authScheme == auth.AuthTypeBasic {
-		cred := base64.StdEncoding.EncodeToString([]byte(d.cfg.Username + ":" + d.cfg.Password))
+	if account != nil && account.Username != "" && d.authScheme == auth.AuthTypeBasic {
+		cred := base64.StdEncoding.EncodeToString([]byte(account.Username + ":" + account.Password))
 		connectReq += fmt.Sprintf("Proxy-Authorization: Basic %s\r\n", cred)
-	} else if d.cfg.Username != "" && d.authScheme == auth.AuthTypeNTLM {
-		type1 := auth.CreateNegotiateMessage(d.cfg.Domain, "UNITUNNEL-PC")
+	} else if account != nil && account.Username != "" && d.authScheme == auth.AuthTypeNTLM {
+		type1 := auth.CreateNegotiateMessage(account.Domain, "UNITUNNEL-PC")
 		connectReq += fmt.Sprintf("Proxy-Authorization: NTLM %s\r\n", type1)
 	}
 	connectReq += "\r\n"
@@ -111,7 +113,7 @@ func (d *Dialer) Dial(network, targetAddr string) (net.Conn, error) {
 				return nil, fmt.Errorf("error decodificando challenge NTLM: %w", err)
 			}
 
-			type3 := auth.CreateAuthenticateMessage(d.cfg.Domain, d.cfg.Username, d.cfg.Password, "UNITUNNEL-PC", chBytes)
+			type3 := auth.CreateAuthenticateMessage(account.Domain, account.Username, account.Password, "UNITUNNEL-PC", chBytes)
 			type3Req := fmt.Sprintf("CONNECT %s HTTP/1.1\r\nHost: %s\r\nProxy-Authorization: NTLM %s\r\nProxy-Connection: keep-alive\r\n\r\n", targetAddr, targetAddr, type3)
 
 			_, err = conn.Write([]byte(type3Req))
@@ -140,9 +142,9 @@ func (d *Dialer) Dial(network, targetAddr string) (net.Conn, error) {
 		}
 
 		// If proxy only asked for basic or Type-1 needs to be re-sent
-		if hasBasic && d.cfg.Username != "" {
+		if hasBasic && account != nil && account.Username != "" {
 			d.authScheme = auth.AuthTypeBasic
-			cred := base64.StdEncoding.EncodeToString([]byte(d.cfg.Username + ":" + d.cfg.Password))
+			cred := base64.StdEncoding.EncodeToString([]byte(account.Username + ":" + account.Password))
 			req := fmt.Sprintf("CONNECT %s HTTP/1.1\r\nHost: %s\r\nProxy-Authorization: Basic %s\r\nProxy-Connection: keep-alive\r\n\r\n", targetAddr, targetAddr, cred)
 			_, err = conn.Write([]byte(req))
 			if err != nil {
