@@ -30,14 +30,31 @@ No necesitas instalar Go ni compiladores C en tu máquina si usas el workflow de
    - Puedes instalarlo rápidamente con WinGet: `winget install -e --id MSYS2.MSYS2` o descargando [w64devkit](https://github.com/skeeto/w64devkit/releases).
 3. **`wintun.dll`** (versión amd64 de [wintun.net](https://www.wintun.net/)).
 
-### Pasos:
+### Pasos de compilación rápida:
+Puedes simplemente hacer doble clic en el archivo `build_windows.bat` o ejecutar:
 ```cmd
 cd unitunnel-go
 go mod tidy
-go build -ldflags="-H windowsgui -s -w" -o unitunnel.exe ./cmd/unitunnel
+go build -ldflags="-H windowsgui -s -w" -o ..\dist\unitunnel.exe .\cmd\unitunnel
 ```
 
+> **Nota sobre el icono y permisos**:
+> El directorio `cmd/unitunnel/` contiene `rsrc_windows_amd64.syso` (recurso Windows PE precompilado que incluye `icon.ico` en todas las resoluciones y el manifiesto UAC `requireAdministrator`). Al ejecutar `go build`, el compilador de Go lo vincula automáticamente al ejecutable `unitunnel.exe`, por lo que el icono personalizado se mostrará inmediatamente en el Explorador de Windows, barra de tareas y bandeja del sistema.
+
 Coloca `wintun.dll` en la misma carpeta que `unitunnel.exe`.
+
+---
+
+## 🔔 Bandeja del Sistema (System Tray Dinámica)
+
+UniTunnel se integra completamente en la bandeja del sistema de Windows (junto al reloj):
+- **Icono personalizado en la bandeja**: Muestra el icono de UniTunnel directamente en el área de notificación.
+- **Menú contextual dinámico**:
+  - Al estar desconectado muestra: **"Conectar"**.
+  - Durante la negociación muestra: **"Conectando..."**.
+  - Al estar conectado y con tráfico confirmado muestra: **"Desconectar"**.
+- Al cerrar la ventana (botón X), la aplicación no se apaga: se oculta discretamente en la bandeja del sistema para mantener el túnel activo en segundo plano sin interrumpir tus descargas o juegos.
+- Para volver a abrirla, haz doble clic en el icono de la bandeja o clic derecho -> "Abrir UniTunnel".
 
 ---
 

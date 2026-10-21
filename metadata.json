@@ -1,6 +1,0 @@
-{
-  "name": "UniTunnel Studio",
-  "description": "Solución nativa en Go y Fyne con Wintun y GitHub Actions para superar restricciones del proxy universitario 10.0.0.1:8080.",
-  "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
-}

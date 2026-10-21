@@ -1,0 +1,30 @@
+# ==============================================================================
+# UniTunnel - Pure Go Project .gitignore
+# ==============================================================================
+
+# Web prototype and node dependencies (Repository is pure Go)
+node_modules/
+dist/
+src/
+bun.lock
+package.json
+package-lock.json
+tsconfig.json
+vite.config.ts
+index.html
+metadata.json
+
+# Go build artifacts and binaries
+bin/
+*.exe
+*.dll
+unitunnel
+unitunnel.exe
+wintun.dll
+
+# Personal configuration & local credentials (use config.example.json instead)
+unitunnel-go/config.json
+
+# OS files
+.DS_Store
+Thumbs.db

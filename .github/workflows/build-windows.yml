@@ -52,11 +52,20 @@ jobs:
           # Tidy dependencies
           go mod tidy
           
+          # Ensure Windows resource object (rsrc_windows_amd64.syso) embeds custom icon and manifest
+          if (Get-Command windres -ErrorAction SilentlyContinue) {
+            Write-Host "Compiling Windows resource object with windres..."
+            Push-Location cmd\unitunnel
+            windres -i unitunnel.rc -O coff -o rsrc_windows_amd64.syso
+            Pop-Location
+          }
+
           # Compile without opening background CMD console (-H windowsgui)
-          # -s -w strips debug symbols for smaller binary size (~15MB instead of 40MB)
+          # Go automatically embeds cmd\unitunnel\rsrc_windows_amd64.syso into unitunnel.exe
+          # -s -w strips debug symbols for smaller binary size
           go build -ldflags="-H windowsgui -s -w" -o ..\dist\unitunnel.exe .\cmd\unitunnel
           
-          Write-Host "Build complete: dist\unitunnel.exe"
+          Write-Host "Build complete: dist\unitunnel.exe (with embedded custom icon and UAC manifest)"
 
       - name: Prepare Release Distribution Package
         run: |
