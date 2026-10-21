@@ -1,6 +1,6 @@
 {
-  "summary":  "Refactored UniTunnel Go Fyne UI:\n- Configured .gitignore to isolate the pure Go codebase from web prototype scaffolding\n- Changed window proportions to a vertical modern aspect ratio (365x640)\n- Converted Settings and Logs from modal overlays to inline collapsible drawer panels\n- Positioned the real-time bandwidth & ping chart strictly at the bottom\n- Cleaned up account management selector and central connection cards",
-  "updatedAt":  "2026-10-21T17:10:52.856452737Z",
+  "summary":  "Actualizado el plan de implementación para reflejar el rollback a la interfaz de pestañas nativas de la versión anterior, conservando intactos el circuit breaker anti-bloqueo y la compatibilidad con NTLMv2 y Squid.",
+  "updatedAt":  "2026-10-21T21:04:29.228830259Z",
   "requestFeedback":  true,
   "userFacing":  true
 }

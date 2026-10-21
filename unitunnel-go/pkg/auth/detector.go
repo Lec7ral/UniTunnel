@@ -18,10 +18,13 @@ const (
 )
 
 type ProbeResult struct {
-	SupportedTypes []AuthType
-	PrimaryType    AuthType
-	ProxyServer    string
-	RawHeaders     []string
+	SupportedTypes    []AuthType
+	PrimaryType       AuthType
+	ProxyServer       string
+	ProxyVia          string
+	SquidError        string
+	Diagnostic        string
+	RelevantHeaders   []string
 }
 
 // ProbeProxy checks what authentication schemes the upstream proxy requires
@@ -50,29 +53,38 @@ func ProbeProxy(proxyAddr string, timeout time.Duration) (*ProbeResult, error) {
 	}
 
 	result := &ProbeResult{
-		SupportedTypes: make([]AuthType, 0),
-		PrimaryType:    AuthTypeNone,
-		ProxyServer:    "",
-		RawHeaders:     make([]string, 0),
+		SupportedTypes:  make([]AuthType, 0),
+		PrimaryType:     AuthTypeNone,
+		ProxyServer:     "Desconocido",
+		RelevantHeaders: make([]string, 0),
 	}
 
-	// If proxy returns 200 OK directly, no authentication is needed (e.g. IP whitelisted)
+	// If proxy returns 200 OK directly, no authentication is needed
 	if strings.Contains(statusLine, "200") {
 		result.SupportedTypes = append(result.SupportedTypes, AuthTypeNone)
 		result.PrimaryType = AuthTypeNone
+		result.Diagnostic = "El proxy permite conexiones directas sin autenticación (IP autorizada)."
 		return result, nil
 	}
 
-	// Parse headers to look for Proxy-Authenticate
+	// Parse headers to look for Proxy-Authenticate, Server, Via, X-Squid-Error
 	for {
 		line, err := reader.ReadString('\n')
 		if err != nil || line == "\r\n" || line == "\n" {
 			break
 		}
 		trimmed := strings.TrimSpace(line)
-		result.RawHeaders = append(result.RawHeaders, trimmed)
-
 		lower := strings.ToLower(trimmed)
+
+		// Filter out noise (Date, Mime-Version, Content-Type, Content-Length)
+		if strings.HasPrefix(lower, "date:") ||
+			strings.HasPrefix(lower, "mime-version:") ||
+			strings.HasPrefix(lower, "content-type:") ||
+			strings.HasPrefix(lower, "content-length:") ||
+			strings.HasPrefix(lower, "connection:") {
+			continue
+		}
+
 		if strings.HasPrefix(lower, "proxy-authenticate:") {
 			val := strings.TrimSpace(trimmed[len("proxy-authenticate:"):])
 			valLower := strings.ToLower(val)
@@ -86,12 +98,22 @@ func ProbeProxy(proxyAddr string, timeout time.Duration) (*ProbeResult, error) {
 			if strings.Contains(valLower, "digest") {
 				result.SupportedTypes = append(result.SupportedTypes, AuthTypeDigest)
 			}
+			result.RelevantHeaders = append(result.RelevantHeaders, trimmed)
 		} else if strings.HasPrefix(lower, "server:") {
 			result.ProxyServer = strings.TrimSpace(trimmed[len("server:"):])
+			result.RelevantHeaders = append(result.RelevantHeaders, trimmed)
+		} else if strings.HasPrefix(lower, "via:") {
+			result.ProxyVia = strings.TrimSpace(trimmed[len("via:"):])
+			result.RelevantHeaders = append(result.RelevantHeaders, trimmed)
+		} else if strings.HasPrefix(lower, "x-squid-error:") {
+			result.SquidError = strings.TrimSpace(trimmed[len("x-squid-error:"):])
+			result.RelevantHeaders = append(result.RelevantHeaders, trimmed)
+		} else if strings.HasPrefix(lower, "x-cache:") {
+			result.RelevantHeaders = append(result.RelevantHeaders, trimmed)
 		}
 	}
 
-	// Choose primary preference: NTLM > Basic > Digest > None
+	// Determine primary authentication type
 	hasNTLM := false
 	hasBasic := false
 	for _, t := range result.SupportedTypes {
@@ -105,13 +127,16 @@ func ProbeProxy(proxyAddr string, timeout time.Duration) (*ProbeResult, error) {
 
 	if hasNTLM {
 		result.PrimaryType = AuthTypeNTLM
+		result.Diagnostic = "El proxy requiere autenticación NTLM de dominio institucional (Active Directory)."
 	} else if hasBasic {
 		result.PrimaryType = AuthTypeBasic
+		result.Diagnostic = "El proxy requiere autenticación básica (usuario y contraseña estándar)."
 	} else if len(result.SupportedTypes) > 0 {
 		result.PrimaryType = result.SupportedTypes[0]
+		result.Diagnostic = fmt.Sprintf("El proxy requiere autenticación tipo %s.", result.PrimaryType)
 	} else {
-		// Default to Basic if 407 was returned without headers
 		result.PrimaryType = AuthTypeBasic
+		result.Diagnostic = "El proxy requiere autenticación (código HTTP 407 detectado)."
 	}
 
 	return result, nil

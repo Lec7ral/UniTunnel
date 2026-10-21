@@ -9,19 +9,21 @@ import (
 )
 
 type Engine struct {
-	cfg       *config.Config
-	dialer    *tunnel.Dialer
-	socksSrv  *tunnel.SOCKS5Server
-	wintunDev *WintunDevice
-	running   bool
-	mu        sync.Mutex
-	OnLog     func(string)
+	cfg         *config.Config
+	dialer      *tunnel.Dialer
+	socksSrv    *tunnel.SOCKS5Server
+	wintunDev   *WintunDevice
+	running     bool
+	mu          sync.Mutex
+	OnLog       func(string)
+	OnAuthError func(error)
 }
 
-func NewEngine(cfg *config.Config, onLog func(string)) *Engine {
+func NewEngine(cfg *config.Config, onLog func(string), onAuthError func(error)) *Engine {
 	return &Engine{
-		cfg:   cfg,
-		OnLog: onLog,
+		cfg:         cfg,
+		OnLog:       onLog,
+		OnAuthError: onAuthError,
 	}
 }
 
@@ -34,8 +36,22 @@ func (e *Engine) Start() error {
 	}
 
 	e.dialer = tunnel.NewDialer(e.cfg)
+	e.dialer.OnLog = e.OnLog
+	e.dialer.OnAuthError = func(err error) {
+		if e.OnAuthError != nil {
+			e.OnAuthError(err)
+		}
+	}
 
-	// 1. Start local SOCKS5 proxy on 127.0.0.1:1080
+	// 1. Pre-flight verification: test credentials before routing any system traffic
+	if e.OnLog != nil {
+		e.OnLog(fmt.Sprintf("→ Verificando credenciales con el proxy %s:%d...", e.cfg.ProxyHost, e.cfg.ProxyPort))
+	}
+	if err := e.dialer.VerifyCredentials(); err != nil {
+		return fmt.Errorf("verificación preliminar de credenciales falló: %w", err)
+	}
+
+	// 2. Start local SOCKS5 proxy on 127.0.0.1:1080
 	socksAddr := fmt.Sprintf("127.0.0.1:%d", e.cfg.LocalSocksPort)
 	e.socksSrv = tunnel.NewSOCKS5Server(socksAddr, e.dialer)
 	e.socksSrv.OnEvent = e.OnLog
@@ -48,7 +64,7 @@ func (e *Engine) Start() error {
 		e.OnLog(fmt.Sprintf("✓ SOCKS5 local activo en %s", socksAddr))
 	}
 
-	// 2. If TUN mode is active, initialize Wintun device and routing
+	// 3. If TUN mode is active, initialize Wintun device and routing
 	if e.cfg.CaptureMode == "tun" {
 		if e.OnLog != nil {
 			e.OnLog("→ Inicializando adaptador Wintun y configurando rutas IP del sistema...")

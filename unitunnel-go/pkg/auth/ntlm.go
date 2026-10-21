@@ -2,11 +2,13 @@ package auth
 
 import (
 	"bytes"
-	"crypto/des"
+	"crypto/hmac"
 	"crypto/md5"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/binary"
 	"strings"
+	"time"
 	"unicode/utf16"
 )
 
@@ -17,7 +19,7 @@ const (
 	NtLmAuthenticate = 3
 )
 
-// NTLM Flags
+// NTLM Negotiate Flags (MS-NLMP)
 const (
 	NegotiateUnicode               = 0x00000001
 	NegotiateOEM                   = 0x00000002
@@ -30,16 +32,50 @@ const (
 	NegotiateTargetInfo            = 0x00800000
 	NegotiateVersion               = 0x02000000
 	Negotiate128                   = 0x20000000
+	NegotiateKeyExchange           = 0x40000000
 	Negotiate56                    = 0x80000000
 )
 
 var ntlmSignature = []byte("NTLMSSP\x00")
 
+// SplitDomainUser extracts domain and username from composite formats like DOMAIN\user or user@domain
+func SplitDomainUser(domain, username string) (string, string) {
+	username = strings.TrimSpace(username)
+	domain = strings.TrimSpace(domain)
+
+	if strings.Contains(username, `\`) {
+		parts := strings.SplitN(username, `\`, 2)
+		if domain == "" {
+			domain = parts[0]
+		}
+		username = parts[1]
+	} else if strings.Contains(username, "/") {
+		parts := strings.SplitN(username, "/", 2)
+		if domain == "" {
+			domain = parts[0]
+		}
+		username = parts[1]
+	} else if strings.Contains(username, "@") {
+		parts := strings.SplitN(username, "@", 2)
+		username = parts[0]
+		if domain == "" {
+			domain = parts[1]
+		}
+	}
+	return domain, username
+}
+
 // CreateNegotiateMessage (Type 1)
 func CreateNegotiateMessage(domain, workstation string) string {
-	flags := uint32(NegotiateUnicode | NegotiateOEM | RequestTarget | NegotiateNTLM | NegotiateAlwaysSign | NegotiateExtendedSessionSec)
+	cleanDomain, _ := SplitDomainUser(domain, "")
+	if workstation == "" {
+		workstation = "UNITUNNEL-PC"
+	}
 
-	domainBytes := []byte(strings.ToUpper(domain))
+	flags := uint32(NegotiateUnicode | NegotiateOEM | RequestTarget | NegotiateNTLM |
+		NegotiateAlwaysSign | NegotiateExtendedSessionSec | Negotiate128 | Negotiate56)
+
+	domainBytes := []byte(strings.ToUpper(cleanDomain))
 	workstationBytes := []byte(strings.ToUpper(workstation))
 
 	if len(domainBytes) > 0 {
@@ -70,9 +106,17 @@ func CreateNegotiateMessage(domain, workstation string) string {
 	return base64.StdEncoding.EncodeToString(buf.Bytes())
 }
 
-// ParseChallengeMessage (Type 2) extracts the 8-byte server challenge
-func ParseChallengeMessage(b64Message string) ([]byte, error) {
-	data, err := base64.StdEncoding.DecodeString(b64Message)
+// ChallengeDetails contains parsed info from NTLM Type-2 Challenge
+type ChallengeDetails struct {
+	ServerChallenge []byte
+	TargetInfo      []byte
+	TargetName      string
+	Flags           uint32
+}
+
+// ParseChallengeMessage (Type 2) parses challenge, target info and domain
+func ParseChallengeMessage(b64Message string) (*ChallengeDetails, error) {
+	data, err := base64.StdEncoding.DecodeString(strings.TrimSpace(b64Message))
 	if err != nil {
 		return nil, err
 	}
@@ -81,25 +125,101 @@ func ParseChallengeMessage(b64Message string) ([]byte, error) {
 		return nil, err
 	}
 
-	// Challenge is at offset 24..32
-	challenge := make([]byte, 8)
-	copy(challenge, data[24:32])
-	return challenge, nil
+	res := &ChallengeDetails{
+		ServerChallenge: make([]byte, 8),
+		Flags:           binary.LittleEndian.Uint32(data[20:24]),
+	}
+	copy(res.ServerChallenge, data[24:32])
+
+	// Extract Target Name (Domain) if present
+	if len(data) >= 20 {
+		targetNameLen := binary.LittleEndian.Uint16(data[12:14])
+		targetNameOffset := binary.LittleEndian.Uint32(data[16:20])
+		if targetNameLen > 0 && int(targetNameOffset+uint32(targetNameLen)) <= len(data) {
+			rawName := data[targetNameOffset : targetNameOffset+uint32(targetNameLen)]
+			res.TargetName = fromUnicode(rawName)
+		}
+	}
+
+	// Extract TargetInfo block (offset 40..48) for NTLMv2 compatibility
+	if len(data) >= 48 {
+		targetInfoLen := binary.LittleEndian.Uint16(data[40:42])
+		targetInfoOffset := binary.LittleEndian.Uint32(data[44:48])
+		if targetInfoLen > 0 && int(targetInfoOffset+uint32(targetInfoLen)) <= len(data) {
+			res.TargetInfo = make([]byte, targetInfoLen)
+			copy(res.TargetInfo, data[targetInfoOffset:targetInfoOffset+uint32(targetInfoLen)])
+		}
+	}
+
+	return res, nil
 }
 
-// CreateAuthenticateMessage (Type 3)
-func CreateAuthenticateMessage(domain, username, password, workstation string, challenge []byte) string {
-	lmHash := lmHash(password)
-	ntlmHash := ntlmHash(password)
+// CreateAuthenticateMessage (Type 3) generates authentic NTLMv2 (Active Directory standard)
+func CreateAuthenticateMessage(domain, username, password, workstation string, challenge []byte, targetInfo []byte) string {
+	cleanDomain, cleanUser := SplitDomainUser(domain, username)
+	if workstation == "" {
+		workstation = "UNITUNNEL-PC"
+	}
 
-	lmResponse := calcResponse(lmHash, challenge)
-	ntlmResponse := calcResponse(ntlmHash, challenge)
+	// 1. Compute NT Hash = MD4(UTF-16LE(password))
+	ntHash := md4Sum(toUnicode(password))
 
-	userUnicode := toUnicode(username)
-	domainUnicode := toUnicode(strings.ToUpper(domain))
+	// 2. Compute NTLMv2 Hash = HMAC-MD5(key = ntHash, data = UTF-16LE(UPPER(cleanUser) + cleanDomain))
+	userUnicodeUpper := toUnicode(strings.ToUpper(cleanUser))
+	domainUnicodeUpper := toUnicode(strings.ToUpper(cleanDomain))
+
+	macV2 := hmac.New(md5.New, ntHash)
+	macV2.Write(userUnicodeUpper)
+	macV2.Write(domainUnicodeUpper)
+	ntlmV2Hash := macV2.Sum(nil)
+
+	// 3. Generate 8-byte random client nonce
+	clientNonce := make([]byte, 8)
+	if _, err := rand.Read(clientNonce); err != nil {
+		binary.LittleEndian.PutUint64(clientNonce, uint64(time.Now().UnixNano()))
+	}
+
+	// 4. Construct NTLMv2 Client Blob
+	// Blob format: Signature (0x01010000) + Reserved + Timestamp + ClientNonce + Reserved + TargetInfo + EndReserved
+	blob := new(bytes.Buffer)
+	blob.Write([]byte{0x01, 0x01, 0x00, 0x00}) // Signature
+	blob.Write([]byte{0x00, 0x00, 0x00, 0x00}) // Reserved
+
+	// Windows FileTime: 100-nanosecond intervals since January 1, 1601 UTC
+	fileTime := uint64((time.Now().UnixNano() / 100) + 116444736000000000)
+	_ = binary.Write(blob, binary.LittleEndian, fileTime)
+
+	blob.Write(clientNonce)
+	blob.Write([]byte{0x00, 0x00, 0x00, 0x00}) // Reserved
+
+	if len(targetInfo) > 0 {
+		blob.Write(targetInfo)
+	}
+	blob.Write([]byte{0x00, 0x00, 0x00, 0x00}) // End Reserved
+
+	blobBytes := blob.Bytes()
+
+	// 5. Compute NTLMv2 Response = HMAC-MD5(ntlmV2Hash, challenge + blob) + blob
+	macNTLM := hmac.New(md5.New, ntlmV2Hash)
+	macNTLM.Write(challenge)
+	macNTLM.Write(blobBytes)
+	ntlmProof := macNTLM.Sum(nil)
+
+	ntlmResponse := append(ntlmProof, blobBytes...)
+
+	// 6. Compute LMv2 Response = HMAC-MD5(ntlmV2Hash, challenge + clientNonce) + clientNonce
+	macLM := hmac.New(md5.New, ntlmV2Hash)
+	macLM.Write(challenge)
+	macLM.Write(clientNonce)
+	lmProof := macLM.Sum(nil)
+	lmResponse := append(lmProof, clientNonce...)
+
+	userUnicode := toUnicode(cleanUser)
+	domainUnicode := toUnicode(strings.ToUpper(cleanDomain))
 	workstationUnicode := toUnicode(strings.ToUpper(workstation))
 
-	flags := uint32(NegotiateUnicode | RequestTarget | NegotiateNTLM | NegotiateAlwaysSign | NegotiateExtendedSessionSec)
+	flags := uint32(NegotiateUnicode | RequestTarget | NegotiateNTLM |
+		NegotiateAlwaysSign | NegotiateExtendedSessionSec | Negotiate128 | Negotiate56)
 
 	payloadOffset := 64
 	domainOffset := payloadOffset
@@ -116,12 +236,12 @@ func CreateAuthenticateMessage(domain, username, password, workstation string, c
 	buf.Write(ntlmSignature)
 	_ = binary.Write(buf, binary.LittleEndian, uint32(NtLmAuthenticate))
 
-	// LM response buffer
+	// LMv2 response buffer
 	_ = binary.Write(buf, binary.LittleEndian, uint16(len(lmResponse)))
 	_ = binary.Write(buf, binary.LittleEndian, uint16(len(lmResponse)))
 	_ = binary.Write(buf, binary.LittleEndian, uint32(lmOffset))
 
-	// NTLM response buffer
+	// NTLMv2 response buffer
 	_ = binary.Write(buf, binary.LittleEndian, uint16(len(ntlmResponse)))
 	_ = binary.Write(buf, binary.LittleEndian, uint16(len(ntlmResponse)))
 	_ = binary.Write(buf, binary.LittleEndian, uint32(ntlmOffset))
@@ -168,60 +288,85 @@ func toUnicode(s string) []byte {
 	return buf.Bytes()
 }
 
-func ntlmHash(password string) []byte {
-	unicodePassword := toUnicode(password)
-	// MD4 hash for NTLM
-	h := md5.New() // Fallback compliant MD5/MD4 block
-	h.Write(unicodePassword)
-	return h.Sum(nil)
+func fromUnicode(b []byte) string {
+	if len(b)%2 != 0 {
+		return string(b)
+	}
+	u16 := make([]uint16, len(b)/2)
+	for i := 0; i < len(u16); i++ {
+		u16[i] = binary.LittleEndian.Uint16(b[i*2 : i*2+2])
+	}
+	return string(utf16.Decode(u16))
 }
 
-func lmHash(password string) []byte {
-	upper := []byte(strings.ToUpper(password))
-	padded := make([]byte, 14)
-	copy(padded, upper)
+// md4Sum implements RFC 1320 MD4 message-digest algorithm (for NT-Hash)
+func md4Sum(msg []byte) []byte {
+	origLenBits := uint64(len(msg) * 8)
 
-	k1 := desKey(padded[0:7])
-	k2 := desKey(padded[7:14])
+	// Padding: append 0x80, then zeroes until len % 64 == 56, then 64-bit length
+	padded := append([]byte(nil), msg...)
+	padded = append(padded, 0x80)
+	for len(padded)%64 != 56 {
+		padded = append(padded, 0x00)
+	}
+	lenBuf := make([]byte, 8)
+	binary.LittleEndian.PutUint64(lenBuf, origLenBits)
+	padded = append(padded, lenBuf...)
 
-	c1, _ := des.NewCipher(k1)
-	c2, _ := des.NewCipher(k2)
+	// Initial constants
+	a := uint32(0x67452301)
+	b := uint32(0xefcdab89)
+	c := uint32(0x98badcfe)
+	d := uint32(0x10325476)
 
-	magic := []byte("KGS!@#$%")
-	res := make([]byte, 16)
-	c1.Encrypt(res[0:8], magic)
-	c2.Encrypt(res[8:16], magic)
-	return res
-}
+	f := func(x, y, z uint32) uint32 { return (x & y) | (^x & z) }
+	g := func(x, y, z uint32) uint32 { return (x & y) | (x & z) | (y & z) }
+	h := func(x, y, z uint32) uint32 { return x ^ y ^ z }
+	rot := func(x uint32, s uint) uint32 { return (x << s) | (x >> (32 - s)) }
 
-func desKey(key7 []byte) []byte {
-	key8 := make([]byte, 8)
-	key8[0] = key7[0] & 0xfe
-	key8[1] = ((key7[0] << 7) | (key7[1] >> 1)) & 0xfe
-	key8[2] = ((key7[1] << 6) | (key7[2] >> 2)) & 0xfe
-	key8[3] = ((key7[2] << 5) | (key7[3] >> 3)) & 0xfe
-	key8[4] = ((key7[3] << 4) | (key7[4] >> 4)) & 0xfe
-	key8[5] = ((key7[4] << 3) | (key7[5] >> 5)) & 0xfe
-	key8[6] = ((key7[5] << 2) | (key7[6] >> 6)) & 0xfe
-	key8[7] = (key7[6] << 1) & 0xfe
-	return key8
-}
+	s1 := []uint{3, 7, 11, 19}
+	s2 := []uint{3, 5, 9, 13}
+	s3 := []uint{3, 9, 11, 15}
+	r3Order := []int{0, 8, 4, 12, 2, 10, 6, 14, 1, 9, 5, 13, 3, 11, 7, 15}
 
-func calcResponse(hash, challenge []byte) []byte {
-	padded := make([]byte, 21)
-	copy(padded, hash)
+	for chunk := 0; chunk < len(padded); chunk += 64 {
+		var x [16]uint32
+		for j := 0; j < 16; j++ {
+			x[j] = binary.LittleEndian.Uint32(padded[chunk+j*4 : chunk+j*4+4])
+		}
 
-	k1 := desKey(padded[0:7])
-	k2 := desKey(padded[7:14])
-	k3 := desKey(padded[14:21])
+		aa, bb, cc, dd := a, b, c, d
 
-	c1, _ := des.NewCipher(k1)
-	c2, _ := des.NewCipher(k2)
-	c3, _ := des.NewCipher(k3)
+		// Round 1
+		for j := 0; j < 16; j++ {
+			a = rot(a+f(b, c, d)+x[j], s1[j%4])
+			a, b, c, d = d, a, b, c
+		}
 
-	resp := make([]byte, 24)
-	c1.Encrypt(resp[0:8], challenge)
-	c2.Encrypt(resp[8:16], challenge)
-	c3.Encrypt(resp[16:24], challenge)
-	return resp
+		// Round 2
+		for j := 0; j < 16; j++ {
+			k := (j%4)*4 + (j / 4)
+			a = rot(a+g(b, c, d)+x[k]+0x5a827999, s2[j%4])
+			a, b, c, d = d, a, b, c
+		}
+
+		// Round 3
+		for j := 0; j < 16; j++ {
+			k := r3Order[j]
+			a = rot(a+h(b, c, d)+x[k]+0x6ed9eba1, s3[j%4])
+			a, b, c, d = d, a, b, c
+		}
+
+		a += aa
+		b += bb
+		c += cc
+		d += dd
+	}
+
+	out := make([]byte, 16)
+	binary.LittleEndian.PutUint32(out[0:4], a)
+	binary.LittleEndian.PutUint32(out[4:8], b)
+	binary.LittleEndian.PutUint32(out[8:12], c)
+	binary.LittleEndian.PutUint32(out[12:16], d)
+	return out
 }

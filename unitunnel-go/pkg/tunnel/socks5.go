@@ -66,6 +66,15 @@ func (s *SOCKS5Server) acceptLoop() {
 func (s *SOCKS5Server) handleClient(conn net.Conn) {
 	defer conn.Close()
 
+	// If authentication is locked to protect the user's AD account, reject early
+	if s.dialer != nil {
+		locked, _ := s.dialer.IsAuthLocked()
+		if locked {
+			_, _ = conn.Write([]byte{0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+			return
+		}
+	}
+
 	// Handshake
 	// Client: [VER, NMETHODS, METHODS...]
 	header := make([]byte, 2)
@@ -135,13 +144,13 @@ func (s *SOCKS5Server) handleClient(conn net.Conn) {
 	port := binary.BigEndian.Uint16(portBuf)
 	target := net.JoinHostPort(host, strconv.Itoa(int(port)))
 
-	// Dial remote destination via university proxy
+	// Dial remote destination via authenticated proxy
 	remoteConn, err := s.dialer.Dial("tcp", target)
 	if err != nil {
-		// Connection failed
 		_, _ = conn.Write([]byte{0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
-		if s.OnEvent != nil {
-			s.OnEvent(fmt.Sprintf("[SOCKS5 Error] Falló túnel a %s: %v", target, err))
+		locked, _ := s.dialer.IsAuthLocked()
+		if !locked && s.OnEvent != nil {
+			s.OnEvent(fmt.Sprintf("[SOCKS5 Error] Falló conexión a %s: %v", target, err))
 		}
 		return
 	}
@@ -151,10 +160,6 @@ func (s *SOCKS5Server) handleClient(conn net.Conn) {
 	_, err = conn.Write([]byte{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 	if err != nil {
 		return
-	}
-
-	if s.OnEvent != nil {
-		s.OnEvent(fmt.Sprintf("[Túnel OK] Conectado a %s a través de 10.0.0.1:8080", target))
 	}
 
 	traffic.CountingPipe(conn, remoteConn)

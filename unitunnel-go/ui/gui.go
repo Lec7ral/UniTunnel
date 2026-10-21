@@ -6,6 +6,7 @@ import (
 	"image/color"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -37,19 +38,13 @@ type GUI struct {
 	connectBtn       *widget.Button
 	accountSelect    *widget.Select
 	accountDetails   *widget.Label
+	proxyTargetLabel *widget.Label
 	trayConnect      *fyne.MenuItem
 	trayMenu         *fyne.Menu
 	pingCancel       context.CancelFunc
 	chart            *RealtimeChart
 	speedMonitorStop chan struct{}
-
-	// Inline collapsible drawer panels
-	panelHolder      *fyne.Container
-	settingsPanel    *fyne.Container
-	logsPanel        *fyne.Container
-	settingsVisible  bool
-	logsVisible      bool
-	proxyTargetLabel *widget.Label
+	mu               sync.Mutex
 
 	// Settings fields
 	proxyHostEntry    *widget.Entry
@@ -60,7 +55,7 @@ type GUI struct {
 	vpsHostEntry      *widget.Entry
 }
 
-// NewGUI initializes the Fyne application and creates the vertically proportioned window.
+// NewGUI initializes the Fyne application and creates the main window.
 func NewGUI(cfg *config.Config) *GUI {
 	myApp := app.NewWithID("com.uninet.unitunnel")
 	myApp.Settings().SetTheme(theme.DarkTheme())
@@ -71,8 +66,8 @@ func NewGUI(cfg *config.Config) *GUI {
 	w.SetIcon(assets.AppIconResource)
 	myApp.SetIcon(assets.AppIconResource)
 
-	// Modern vertical dimensions (365x640) matching OpenVPN Connect & Cloudflare WARP
-	w.Resize(fyne.NewSize(365, 640))
+	// Dimensions with ample horizontal and vertical room for tabs and controls
+	w.Resize(fyne.NewSize(420, 580))
 	w.SetFixedSize(true)
 
 	return &GUI{
@@ -86,52 +81,60 @@ func NewGUI(cfg *config.Config) *GUI {
 func (g *GUI) AppendLog(msg string) {
 	ts := time.Now().Format("15:04:05")
 	entry := fmt.Sprintf("[%s] %s\n", ts, msg)
+	g.mu.Lock()
 	g.logText += entry
+	currentText := g.logText
+	g.mu.Unlock()
+
 	if g.logWidget != nil {
-		g.logWidget.SetText(g.logText)
-		g.logWidget.CursorRow = strings.Count(g.logText, "\n")
+		g.logWidget.SetText(currentText)
+		g.logWidget.CursorRow = strings.Count(currentText, "\n")
 	}
 }
 
-// Setup builds the user interface with inline drawers and bottom-pinned chart.
+// Setup builds the tabbed user interface (Conexión, Ajustes, Registro).
 func (g *GUI) Setup() {
 	g.setupSystemTray()
 
-	// 1. Top Header Bar:
-	// [Settings (Gear)] <------ "UniTunnel" Header ------> [Logs (Doc)]
-	settingsBtn := widget.NewButtonWithIcon("", theme.SettingsIcon(), func() {
-		g.toggleSettings()
-	})
-	logsBtn := widget.NewButtonWithIcon("", theme.DocumentIcon(), func() {
-		g.toggleLogs()
+	tabs := container.NewAppTabs(
+		container.NewTabItemWithIcon("Conexión", theme.HomeIcon(), g.buildConnectionTab()),
+		container.NewTabItemWithIcon("Ajustes", theme.SettingsIcon(), g.buildSettingsTab()),
+		container.NewTabItemWithIcon("Registro", theme.DocumentIcon(), g.buildLogsTab()),
+	)
+	tabs.SetTabLocation(container.TabLocationTop)
+
+	g.window.SetContent(tabs)
+
+	// Intercept window close to stay resident in System Tray
+	g.window.SetCloseIntercept(func() {
+		g.window.Hide()
 	})
 
+	g.AppendLog("[SISTEMA] UniTunnel iniciado con privilegios de Administrador.")
+	g.AppendLog(fmt.Sprintf("[CONFIG] Proxy configurado: %s:%d (%s)", g.cfg.ProxyHost, g.cfg.ProxyPort, g.cfg.AuthType))
+}
+
+func (g *GUI) getProxySummaryText() string {
+	mode := "Wintun (L3)"
+	if g.cfg.CaptureMode == "system_proxy" {
+		mode = "Proxy Windows"
+	}
+	return fmt.Sprintf("Proxy: %s:%d  ·  %s", g.cfg.ProxyHost, g.cfg.ProxyPort, mode)
+}
+
+// buildConnectionTab builds the main connection view.
+func (g *GUI) buildConnectionTab() fyne.CanvasObject {
 	appTitle := canvas.NewText("UniTunnel", color.NRGBA{R: 248, G: 250, B: 252, A: 255})
-	appTitle.TextSize = 16
+	appTitle.TextSize = 18
 	appTitle.TextStyle = fyne.TextStyle{Bold: true}
 	appTitle.Alignment = fyne.TextAlignCenter
 
-	subtitle := canvas.NewText("TUNEL DE ALTA VELOCIDAD", color.NRGBA{R: 148, G: 163, B: 184, A: 255})
-	subtitle.TextSize = 9
-	subtitle.TextStyle = fyne.TextStyle{Bold: true}
+	subtitle := canvas.NewText("Túnel de Red · Autenticación NTLMv2 / AD", color.NRGBA{R: 148, G: 163, B: 184, A: 255})
+	subtitle.TextSize = 11
 	subtitle.Alignment = fyne.TextAlignCenter
 
-	titleBox := container.NewVBox(
-		container.NewCenter(appTitle),
-		container.NewCenter(subtitle),
-	)
-
-	topBar := container.NewBorder(nil, nil, settingsBtn, logsBtn, titleBox)
-
-	// 2. Prepare Inline Collapsible Panels
-	g.setupSettingsPanel()
-	g.setupLogsPanel()
-	g.panelHolder = container.NewVBox(g.settingsPanel, g.logsPanel)
-	g.panelHolder.Hide()
-
-	// 3. Central OpenVPN-Style Connection Section
 	g.statusText = canvas.NewText("DESCONECTADO", color.NRGBA{R: 148, G: 163, B: 184, A: 255})
-	g.statusText.TextSize = 13
+	g.statusText.TextSize = 14
 	g.statusText.TextStyle = fyne.TextStyle{Bold: true}
 	g.statusText.Alignment = fyne.TextAlignCenter
 
@@ -145,25 +148,25 @@ func (g *GUI) Setup() {
 	g.proxyTargetLabel.TextStyle = fyne.TextStyle{Monospace: true}
 
 	connectCard := container.NewVBox(
+		container.NewCenter(appTitle),
+		container.NewCenter(subtitle),
+		widget.NewSeparator(),
 		container.NewCenter(g.statusText),
 		container.NewPadded(g.connectBtn),
 		container.NewCenter(g.proxyTargetLabel),
 	)
 
-	// 4. Account Profile Selector Section
 	accountCard := g.setupAccountSection()
 
-	// Scrollable middle body (Header -> Panels -> Connect Card -> Account Card)
 	middleContent := container.NewVBox(
-		container.NewPadded(connectCard),
+		connectCard,
 		widget.NewSeparator(),
-		container.NewPadded(accountCard),
+		accountCard,
 	)
 
-	// 5. Bottom Section: Real-time traffic & ping chart (Pinned at bottom)
-	g.chart = NewRealtimeChart(330, 48)
+	g.chart = NewRealtimeChart(360, 50)
 
-	footerLabel := canvas.NewText("Wintun L3 · Proceso Oculto Admin · Cero Consolas", color.NRGBA{R: 100, G: 116, B: 139, A: 255})
+	footerLabel := canvas.NewText("Wintun L3 · Protección Anti-Bloqueo AD · Cero Consolas", color.NRGBA{R: 100, G: 116, B: 139, A: 255})
 	footerLabel.TextSize = 10
 	footerLabel.Alignment = fyne.TextAlignCenter
 
@@ -173,217 +176,177 @@ func (g *GUI) Setup() {
 		container.NewCenter(footerLabel),
 	)
 
-	// Top container combines TopBar + Inline Drawers
-	topSection := container.NewVBox(
-		topBar,
-		widget.NewSeparator(),
-		g.panelHolder,
-	)
-
-	// Assemble final window layout using Border layout to lock top & bottom
-	mainLayout := container.NewBorder(
-		topSection,
+	return container.NewBorder(
+		nil,
 		bottomSection,
 		nil,
 		nil,
-		container.NewVScroll(middleContent),
+		container.NewVScroll(container.NewPadded(middleContent)),
 	)
-
-	g.window.SetContent(mainLayout)
-
-	// Intercept window close to stay resident in System Tray
-	g.window.SetCloseIntercept(func() {
-		g.window.Hide()
-	})
-
-	g.AppendLog("UniTunnel v2.4 iniciado con privilegios de Administrador.")
-	g.AppendLog(fmt.Sprintf("Proxy configurado: %s:%d (%s)", g.cfg.ProxyHost, g.cfg.ProxyPort, g.cfg.AuthType))
 }
 
-func (g *GUI) getProxySummaryText() string {
-	mode := "Wintun"
-	if g.cfg.CaptureMode == "system_proxy" {
-		mode = "ProxyWin"
-	}
-	return fmt.Sprintf("Proxy: %s:%d  ·  %s", g.cfg.ProxyHost, g.cfg.ProxyPort, mode)
-}
-
-// toggleSettings unfolds or collapses the Settings drawer panel inline.
-func (g *GUI) toggleSettings() {
-	if g.settingsVisible {
-		g.settingsVisible = false
-		g.settingsPanel.Hide()
-		g.panelHolder.Hide()
-		return
-	}
-
-	// Open Settings, close Logs
-	g.logsVisible = false
-	g.logsPanel.Hide()
-
-	// Sync inputs with current config
-	g.proxyHostEntry.SetText(g.cfg.ProxyHost)
-	g.proxyPortEntry.SetText(strconv.Itoa(g.cfg.ProxyPort))
-	g.authTypeSelect.SetSelected(g.cfg.AuthType)
-	g.captureModeSelect.SetSelected(g.cfg.CaptureMode)
-	g.vpsCheck.SetChecked(g.cfg.VPSEnabled)
-	g.vpsHostEntry.SetText(g.cfg.VPSServer)
-
-	g.settingsVisible = true
-	g.settingsPanel.Show()
-	g.panelHolder.Show()
-}
-
-// toggleLogs unfolds or collapses the Logs drawer panel inline.
-func (g *GUI) toggleLogs() {
-	if g.logsVisible {
-		g.logsVisible = false
-		g.logsPanel.Hide()
-		g.panelHolder.Hide()
-		return
-	}
-
-	// Open Logs, close Settings
-	g.settingsVisible = false
-	g.settingsPanel.Hide()
-
-	if g.logWidget != nil {
-		g.logWidget.SetText(g.logText)
-		g.logWidget.CursorRow = strings.Count(g.logText, "\n")
-	}
-
-	g.logsVisible = true
-	g.logsPanel.Show()
-	g.panelHolder.Show()
-}
-
-// setupSettingsPanel builds the inline expandable settings view.
-func (g *GUI) setupSettingsPanel() {
+// buildSettingsTab builds the network settings view.
+func (g *GUI) buildSettingsTab() fyne.CanvasObject {
 	g.proxyHostEntry = widget.NewEntry()
-	g.proxyHostEntry.SetPlaceHolder("Ej: 10.0.0.1")
+	g.proxyHostEntry.SetText(g.cfg.ProxyHost)
+	g.proxyHostEntry.SetPlaceHolder("Ej: 10.0.0.1 o proxy.institucion.cu")
 
 	g.proxyPortEntry = widget.NewEntry()
+	g.proxyPortEntry.SetText(strconv.Itoa(g.cfg.ProxyPort))
 	g.proxyPortEntry.SetPlaceHolder("8080")
 
 	g.authTypeSelect = widget.NewSelect([]string{"auto", "ntlm", "basic", "none"}, nil)
-	g.captureModeSelect = widget.NewSelect([]string{"tun", "system_proxy"}, nil)
+	g.authTypeSelect.SetSelected(g.cfg.AuthType)
 
-	g.vpsCheck = widget.NewCheck("Habilitar VPS de salida", func(b bool) {
+	g.captureModeSelect = widget.NewSelect([]string{"tun", "system_proxy"}, nil)
+	g.captureModeSelect.SetSelected(g.cfg.CaptureMode)
+
+	g.vpsCheck = widget.NewCheck("Habilitar VPS de salida (opcional)", func(b bool) {
 		g.cfg.VPSEnabled = b
 	})
+	g.vpsCheck.SetChecked(g.cfg.VPSEnabled)
+
 	g.vpsHostEntry = widget.NewEntry()
+	g.vpsHostEntry.SetText(g.cfg.VPSServer)
 	g.vpsHostEntry.SetPlaceHolder("vps.midominio.com:443")
 
-	probeBtn := widget.NewButtonWithIcon("Sondear Proxy", theme.SearchIcon(), func() {
-		addr := fmt.Sprintf("%s:%s", g.proxyHostEntry.Text, g.proxyPortEntry.Text)
-		g.AppendLog(fmt.Sprintf("Sondeando proxy %s...", addr))
+	probeBtn := widget.NewButtonWithIcon("Sondear Proxy (Detectar Esquema)", theme.SearchIcon(), func() {
+		host := strings.TrimSpace(g.proxyHostEntry.Text)
+		portStr := strings.TrimSpace(g.proxyPortEntry.Text)
+		addr := fmt.Sprintf("%s:%s", host, portStr)
+		g.AppendLog(fmt.Sprintf("[SONDA] Conectando con %s para detectar esquema...", addr))
+
 		go func() {
-			p, _ := strconv.Atoi(g.proxyPortEntry.Text)
-			res, err := auth.ProbeProxy(fmt.Sprintf("%s:%d", g.proxyHostEntry.Text, p), 5*time.Second)
+			p, _ := strconv.Atoi(portStr)
+			res, err := auth.ProbeProxy(fmt.Sprintf("%s:%d", host, p), 5*time.Second)
 			if err != nil {
+				g.AppendLog(fmt.Sprintf("[SONDA ERROR] Falló sonda a %s: %v", addr, err))
 				dialog.ShowError(err, g.window)
 				return
 			}
-			msg := fmt.Sprintf("Esquema detectado: %s\nServidor: %s\nCabeceras: %s",
-				res.PrimaryType, res.ProxyServer, strings.Join(res.RawHeaders, "\n"))
-			dialog.ShowInformation("Resultado de Sonda", msg, g.window)
+
+			// Clean, formatted custom dialog
+			titleLbl := widget.NewLabelWithStyle("Resultado de Sonda del Proxy", fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
+			serverLbl := widget.NewLabel(fmt.Sprintf("• Servidor: %s", res.ProxyServer))
+			if res.ProxyVia != "" {
+				serverLbl.SetText(fmt.Sprintf("• Servidor: %s (Via: %s)", res.ProxyServer, res.ProxyVia))
+			}
+
+			authLbl := widget.NewLabelWithStyle(fmt.Sprintf("• Esquema: %s", strings.ToUpper(string(res.PrimaryType))), fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+			diagLbl := widget.NewLabel(fmt.Sprintf("• Diagnóstico: %s", res.Diagnostic))
+			diagLbl.Wrapping = fyne.TextWrapWord
+
+			var bodyItems []fyne.CanvasObject
+			bodyItems = append(bodyItems, titleLbl, widget.NewSeparator(), serverLbl, authLbl, diagLbl)
+
+			if len(res.RelevantHeaders) > 0 {
+				hdrTitle := widget.NewLabelWithStyle("Cabeceras Relevantes:", fyne.TextAlignLeading, fyne.TextStyle{Italic: true})
+				bodyItems = append(bodyItems, widget.NewSeparator(), hdrTitle)
+				for _, h := range res.RelevantHeaders {
+					l := widget.NewLabel("  " + h)
+					l.TextStyle = fyne.TextStyle{Monospace: true}
+					l.Wrapping = fyne.TextWrapWord
+					bodyItems = append(bodyItems, l)
+				}
+			}
+
+			scrollContent := container.NewVScroll(container.NewVBox(bodyItems...))
+			scrollContent.SetMinSize(fyne.NewSize(350, 240))
+
+			d := dialog.NewCustom("Sonda de Proxy", "Aceptar", scrollContent, g.window)
+			d.Resize(fyne.NewSize(380, 310))
+			d.Show()
+
 			if res.PrimaryType == auth.AuthTypeNTLM {
 				g.authTypeSelect.SetSelected("ntlm")
+				g.AppendLog(fmt.Sprintf("[SONDA] Autenticación NTLM requerida por %s (seleccionada automáticamente).", res.ProxyServer))
 			} else if res.PrimaryType == auth.AuthTypeBasic {
 				g.authTypeSelect.SetSelected("basic")
+				g.AppendLog(fmt.Sprintf("[SONDA] Autenticación Basic detectada en %s.", res.ProxyServer))
 			}
 		}()
 	})
 
-	saveBtn := widget.NewButtonWithIcon("Guardar", theme.DocumentSaveIcon(), func() {
-		g.cfg.ProxyHost = g.proxyHostEntry.Text
-		if p, err := strconv.Atoi(g.proxyPortEntry.Text); err == nil {
+	saveBtn := widget.NewButtonWithIcon("Guardar Ajustes", theme.DocumentSaveIcon(), func() {
+		g.cfg.ProxyHost = strings.TrimSpace(g.proxyHostEntry.Text)
+		if p, err := strconv.Atoi(strings.TrimSpace(g.proxyPortEntry.Text)); err == nil {
 			g.cfg.ProxyPort = p
 		}
 		g.cfg.AuthType = g.authTypeSelect.Selected
 		g.cfg.CaptureMode = g.captureModeSelect.Selected
-		g.cfg.VPSServer = g.vpsHostEntry.Text
+		g.cfg.VPSServer = strings.TrimSpace(g.vpsHostEntry.Text)
 
-		_ = config.SaveConfig(g.cfg)
+		if err := config.SaveConfig(g.cfg); err != nil {
+			dialog.ShowError(err, g.window)
+			return
+		}
 		g.proxyTargetLabel.SetText(g.getProxySummaryText())
-		g.AppendLog("✓ Ajustes guardados correctamente en config.json.")
-		g.toggleSettings() // collapse drawer
+		g.AppendLog("[CONFIG] ✓ Ajustes guardados correctamente en config.json.")
+		dialog.ShowInformation("Éxito", "Configuración guardada correctamente.", g.window)
 	})
 	saveBtn.Importance = widget.HighImportance
 
-	closeBtn := widget.NewButtonWithIcon("Cerrar", theme.CancelIcon(), func() {
-		g.toggleSettings()
-	})
-
-	header := container.NewBorder(
-		nil,
-		nil,
-		widget.NewLabelWithStyle("⚙ Ajustes de Conexión", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
-		closeBtn,
+	form := widget.NewForm(
+		widget.NewFormItem("Servidor Proxy:", g.proxyHostEntry),
+		widget.NewFormItem("Puerto:", g.proxyPortEntry),
+		widget.NewFormItem("Autenticación:", g.authTypeSelect),
+		widget.NewFormItem("Modo de Captura:", g.captureModeSelect),
 	)
 
-	form := container.NewVBox(
-		widget.NewForm(
-			widget.NewFormItem("Servidor Proxy:", g.proxyHostEntry),
-			widget.NewFormItem("Puerto:", g.proxyPortEntry),
-			widget.NewFormItem("Autenticación:", g.authTypeSelect),
-			widget.NewFormItem("Modo Captura:", g.captureModeSelect),
-		),
+	settingsBox := container.NewVBox(
+		widget.NewLabelWithStyle("CONFIGURACIÓN DE RED INSTITUCIONAL", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		form,
 		container.NewHBox(probeBtn),
 		widget.NewSeparator(),
+		widget.NewLabelWithStyle("SALIDA EXTERNA (OPCIONAL)", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 		g.vpsCheck,
-		widget.NewForm(widget.NewFormItem("VPS:", g.vpsHostEntry)),
+		widget.NewForm(widget.NewFormItem("Servidor VPS:", g.vpsHostEntry)),
 		widget.NewSeparator(),
-		container.NewHBox(saveBtn, closeBtn),
+		container.NewPadded(saveBtn),
 	)
 
-	card := widget.NewCard("", "", container.NewVBox(header, form))
-	g.settingsPanel = container.NewVBox(card, widget.NewSeparator())
-	g.settingsPanel.Hide()
+	return container.NewVScroll(container.NewPadded(settingsBox))
 }
 
-// setupLogsPanel builds the inline live console log view.
-func (g *GUI) setupLogsPanel() {
+// buildLogsTab builds the live console log view.
+func (g *GUI) buildLogsTab() fyne.CanvasObject {
 	g.logWidget = widget.NewMultiLineEntry()
 	g.logWidget.TextStyle = fyne.TextStyle{Monospace: true}
 	g.logWidget.Wrapping = fyne.TextWrapWord
+	g.mu.Lock()
 	g.logWidget.SetText(g.logText)
+	g.mu.Unlock()
 
 	copyBtn := widget.NewButtonWithIcon("Copiar", theme.ContentCopyIcon(), func() {
-		g.window.Clipboard().SetContent(g.logText)
-		g.AppendLog("Logs copiados al portapapeles.")
+		g.mu.Lock()
+		txt := g.logText
+		g.mu.Unlock()
+		g.window.Clipboard().SetContent(txt)
+		g.AppendLog("[LOGS] Registro copiado al portapapeles.")
 	})
 
 	clearBtn := widget.NewButtonWithIcon("Limpiar", theme.ContentClearIcon(), func() {
+		g.mu.Lock()
 		g.logText = ""
+		g.mu.Unlock()
 		g.logWidget.SetText("")
 	})
 
-	closeBtn := widget.NewButtonWithIcon("Cerrar", theme.CancelIcon(), func() {
-		g.toggleLogs()
-	})
-
+	actions := container.NewHBox(copyBtn, clearBtn)
 	header := container.NewBorder(
 		nil,
 		nil,
-		widget.NewLabelWithStyle("📋 Registro de Conexión", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
-		closeBtn,
+		widget.NewLabelWithStyle("REGISTRO DE EVENTOS Y DIAGNÓSTICO", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		actions,
 	)
 
-	actions := container.NewHBox(copyBtn, clearBtn)
-
-	// Set fixed height scroll for the log viewer
-	logScroll := container.NewVScroll(g.logWidget)
-	logScroll.SetMinSize(fyne.NewSize(330, 160))
-
-	card := widget.NewCard("", "", container.NewVBox(
-		header,
-		logScroll,
-		actions,
-	))
-
-	g.logsPanel = container.NewVBox(card, widget.NewSeparator())
-	g.logsPanel.Hide()
+	return container.NewBorder(
+		container.NewPadded(header),
+		nil,
+		nil,
+		nil,
+		container.NewPadded(g.logWidget),
+	)
 }
 
 func (g *GUI) setupAccountSection() *fyne.Container {
@@ -407,7 +370,12 @@ func (g *GUI) setupAccountSection() *fyne.Container {
 				g.cfg.SetActiveAccount(acc.ID)
 				_ = config.SaveConfig(g.cfg)
 				g.updateAccountDetailsText(&acc)
-				g.AppendLog(fmt.Sprintf("Cuenta cambiada a: %s (%s)", acc.Name, acc.Username))
+				cleanDom, cleanU := auth.SplitDomainUser(acc.Domain, acc.Username)
+				domStr := ""
+				if cleanDom != "" {
+					domStr = fmt.Sprintf(" (Dominio: %s)", cleanDom)
+				}
+				g.AppendLog(fmt.Sprintf("[CUENTA] Perfil activo cambiado a: %s (Usuario: %s%s)", acc.Name, cleanU, domStr))
 				break
 			}
 		}
@@ -448,11 +416,12 @@ func (g *GUI) updateAccountDetailsText(acc *config.UserAccount) {
 	if acc == nil || acc.Username == "" {
 		g.accountDetails.SetText("(Sin credenciales configuradas)")
 	} else {
-		dom := ""
-		if acc.Domain != "" {
-			dom = acc.Domain + `\`
+		cleanDom, cleanU := auth.SplitDomainUser(acc.Domain, acc.Username)
+		domPrefix := ""
+		if cleanDom != "" {
+			domPrefix = cleanDom + `\`
 		}
-		g.accountDetails.SetText(fmt.Sprintf("%s%s · Contraseña guardada", dom, acc.Username))
+		g.accountDetails.SetText(fmt.Sprintf("%s%s · Contraseña guardada", domPrefix, cleanU))
 	}
 }
 
@@ -474,32 +443,37 @@ func (g *GUI) showAddAccountDialog() {
 	nameEntry.SetPlaceHolder("Ej: Cuenta Personal")
 
 	userEntry := widget.NewEntry()
-	userEntry.SetPlaceHolder("Usuario de la universidad")
+	userEntry.SetPlaceHolder("Usuario (o DOMINIO\\usuario)")
 
 	domainEntry := widget.NewEntry()
-	domainEntry.SetPlaceHolder("Opcional (Ej: FACULTAD)")
+	domainEntry.SetPlaceHolder("Opcional si usas DOMINIO\\usuario")
 
 	passEntry := widget.NewPasswordEntry()
-	passEntry.SetPlaceHolder("Contraseña")
+	passEntry.SetPlaceHolder("Contraseña de red institucional")
 
 	form := widget.NewForm(
-		widget.NewFormItem("Nombre del Perfil:", nameEntry),
+		widget.NewFormItem("Nombre Perfil:", nameEntry),
 		widget.NewFormItem("Usuario:", userEntry),
 		widget.NewFormItem("Dominio (NTLM):", domainEntry),
 		widget.NewFormItem("Contraseña:", passEntry),
 	)
 
-	d := dialog.NewCustomConfirm("Añadir Cuenta Universitaria", "Guardar", "Cancelar", form, func(confirmed bool) {
-		if !confirmed || userEntry.Text == "" {
+	d := dialog.NewCustomConfirm("Añadir Cuenta Institucional", "Guardar", "Cancelar", form, func(confirmed bool) {
+		if !confirmed || strings.TrimSpace(userEntry.Text) == "" {
 			return
 		}
-		acc := g.cfg.AddAccount(nameEntry.Text, userEntry.Text, domainEntry.Text, passEntry.Text)
+		acc := g.cfg.AddAccount(
+			strings.TrimSpace(nameEntry.Text),
+			strings.TrimSpace(userEntry.Text),
+			strings.TrimSpace(domainEntry.Text),
+			passEntry.Text,
+		)
 		_ = config.SaveConfig(g.cfg)
 		g.refreshAccountList()
-		g.AppendLog(fmt.Sprintf("✓ Cuenta '%s' agregada y guardada.", acc.Name))
+		g.AppendLog(fmt.Sprintf("[CUENTA] ✓ Cuenta '%s' agregada y configurada.", acc.Name))
 	}, g.window)
 
-	d.Resize(fyne.NewSize(340, 260))
+	d.Resize(fyne.NewSize(350, 270))
 	d.Show()
 }
 
@@ -519,7 +493,7 @@ func (g *GUI) showDeleteAccountDialog() {
 			g.cfg.DeleteAccount(active.ID)
 			_ = config.SaveConfig(g.cfg)
 			g.refreshAccountList()
-			g.AppendLog(fmt.Sprintf("✓ Cuenta '%s' eliminada.", active.Name))
+			g.AppendLog(fmt.Sprintf("[CUENTA] ✓ Perfil '%s' eliminado.", active.Name))
 		}
 	}, g.window)
 }
@@ -552,17 +526,25 @@ func (g *GUI) toggleConnection() {
 		g.connectBtn.Importance = widget.HighImportance
 
 		g.updateTrayState("disconnected")
+		g.AppendLog("[TÚNEL] Conexión cerrada y rutas restauradas.")
 		return
 	}
 
 	// Verify active account has credentials
 	acc := g.cfg.GetActiveAccount()
-	if acc == nil || acc.Username == "" {
-		dialog.ShowInformation("Faltan Credenciales", "Por favor ingresa usuario y contraseña en el selector de cuentas.", g.window)
+	if acc == nil || strings.TrimSpace(acc.Username) == "" {
+		dialog.ShowInformation("Credenciales Requeridas",
+			"Por favor ingresa tu usuario y contraseña en el selector de cuentas antes de conectar.", g.window)
 		return
 	}
 
-	g.statusText.Text = "CONECTANDO..."
+	cleanDom, cleanU := auth.SplitDomainUser(acc.Domain, acc.Username)
+	domStr := ""
+	if cleanDom != "" {
+		domStr = fmt.Sprintf(" (Dominio: %s)", cleanDom)
+	}
+
+	g.statusText.Text = "VERIFICANDO CREDENCIALES..."
 	g.statusText.Color = color.NRGBA{R: 245, G: 158, B: 11, A: 255} // Amber
 	g.statusText.Refresh()
 
@@ -570,67 +552,97 @@ func (g *GUI) toggleConnection() {
 	g.connectBtn.Importance = widget.WarningImportance
 	g.updateTrayState("connecting")
 
-	g.AppendLog(fmt.Sprintf("Iniciando túnel hacia %s:%d con usuario '%s'...", g.cfg.ProxyHost, g.cfg.ProxyPort, acc.Username))
+	g.AppendLog(fmt.Sprintf("[CONEXIÓN] Iniciando verificación hacia %s:%d con usuario '%s'%s...",
+		g.cfg.ProxyHost, g.cfg.ProxyPort, cleanU, domStr))
 
-	g.engine = tun.NewEngine(g.cfg, func(msg string) {
-		g.AppendLog(msg)
-	})
+	// Run pre-flight check and startup in background to prevent UI lockup
+	go func() {
+		engine := tun.NewEngine(g.cfg, func(msg string) {
+			g.AppendLog(msg)
+		}, func(authErr error) {
+			// Asynchronous auth rejection callback: trip anti-lockout immediately
+			g.AppendLog(fmt.Sprintf("✗ [AUTH-RECHAZO] %v", authErr))
+			g.AppendLog("🛡 [PROTECCIÓN ACTIVA] UniTunnel detuvo el túnel para proteger tu cuenta de dominio.")
+			if g.engine != nil && g.engine.IsRunning() {
+				g.engine.Stop()
+			}
+			if g.cfg.CaptureMode == "system_proxy" {
+				_ = sysproxy.DisableSystemProxy()
+			}
+			g.statusText.Text = "ERROR: SESIÓN CERRADA POR EL PROXY"
+			g.statusText.Color = color.NRGBA{R: 239, G: 68, B: 68, A: 255}
+			g.statusText.Refresh()
+			g.connectBtn.SetText("CONECTAR")
+			g.connectBtn.SetIcon(theme.MediaPlayIcon())
+			g.connectBtn.Importance = widget.HighImportance
+			g.updateTrayState("disconnected")
+		})
 
-	if err := g.engine.Start(); err != nil {
-		g.statusText.Text = "ERROR"
-		g.statusText.Color = color.NRGBA{R: 239, G: 68, B: 68, A: 255}
+		g.engine = engine
+
+		err := g.engine.Start()
+		if err != nil {
+			g.statusText.Text = "ERROR: AUTENTICACIÓN RECHAZADA"
+			g.statusText.Color = color.NRGBA{R: 239, G: 68, B: 68, A: 255}
+			g.statusText.Refresh()
+
+			g.connectBtn.SetText("CONECTAR")
+			g.connectBtn.SetIcon(theme.MediaPlayIcon())
+			g.connectBtn.Importance = widget.HighImportance
+			g.updateTrayState("disconnected")
+
+			g.AppendLog(fmt.Sprintf("✗ [AUTH-FALLO] %v", err))
+			g.AppendLog("🛡 [PROTECCIÓN ACTIVA] Todos los reintentos automáticos han sido cancelados.")
+			g.AppendLog("ℹ CONSEJO: Verifica tu usuario, contraseña y formato de dominio (ej: DOMINIO\\usuario).")
+
+			errMsg := fmt.Sprintf("El proxy universitario rechazó las credenciales:\n\n%v\n\n🛡 PROTECCIÓN ANTI-BLOQUEO:\nUniTunnel canceló inmediatamente los reintentos automáticos para evitar que Active Directory bloquee tu cuenta institucional.\n\nPor favor verifica tu usuario, contraseña o especifica el dominio si tu red lo requiere.", err)
+			dialog.ShowError(fmt.Errorf("%s", errMsg), g.window)
+			return
+		}
+
+		// Connected successfully!
+		if g.cfg.CaptureMode == "system_proxy" {
+			_ = sysproxy.EnableSystemProxy(g.cfg.LocalSocksPort)
+			g.AppendLog("[SISTEMA] ✓ Proxy del sistema Windows configurado en 127.0.0.1:1080.")
+		}
+
+		g.statusText.Text = "CONECTADO · VERIFICANDO TRÁFICO..."
+		g.statusText.Color = color.NRGBA{R: 52, G: 211, B: 153, A: 255} // Emerald Green
 		g.statusText.Refresh()
-		g.AppendLog(fmt.Sprintf("Fallo al conectar: %v", err))
-		g.connectBtn.SetText("CONECTAR")
-		g.connectBtn.SetIcon(theme.MediaPlayIcon())
-		g.connectBtn.Importance = widget.HighImportance
-		g.updateTrayState("disconnected")
-		dialog.ShowError(err, g.window)
-		return
-	}
 
-	if g.cfg.CaptureMode == "system_proxy" {
-		_ = sysproxy.EnableSystemProxy(g.cfg.LocalSocksPort)
-		g.AppendLog("✓ Proxy del sistema Windows configurado en 127.0.0.1:1080.")
-	}
+		g.connectBtn.SetText("DESCONECTAR")
+		g.connectBtn.SetIcon(theme.MediaStopIcon())
+		g.connectBtn.Importance = widget.DangerImportance
 
-	g.statusText.Text = "CONECTADO · VERIFICANDO TRÁFICO..."
-	g.statusText.Color = color.NRGBA{R: 52, G: 211, B: 153, A: 255} // Emerald Green
-	g.statusText.Refresh()
+		g.updateTrayState("connected")
+		g.AppendLog("✓ [CONECTADO] Túnel activo hacia el proxy universitario.")
 
-	g.connectBtn.SetText("DESCONECTAR")
-	g.connectBtn.SetIcon(theme.MediaStopIcon())
-	g.connectBtn.Importance = widget.DangerImportance
+		// Start real-time speed monitor feeding the line chart at the bottom
+		g.speedMonitorStop = traffic.StartSpeedMonitor(1*time.Second, func(speedMBs float64, pingMS int64) {
+			if g.chart != nil {
+				g.chart.AddData(speedMBs, pingMS)
+			}
+		})
 
-	g.updateTrayState("connected")
+		// Start periodic ping health-check to verify real traffic flow through Wintun
+		ctx, cancel := context.WithCancel(context.Background())
+		g.pingCancel = cancel
 
-	// Start real-time speed monitor feeding the line chart at the bottom
-	g.speedMonitorStop = traffic.StartSpeedMonitor(1*time.Second, func(speedMBs float64, pingMS int64) {
-		if g.chart != nil {
-			g.chart.AddData(speedMBs, pingMS)
-		}
-	})
-
-	// Start periodic ping health-check to verify real traffic flow through Wintun
-	ctx, cancel := context.WithCancel(context.Background())
-	g.pingCancel = cancel
-
-	go tun.StartPeriodicPing(ctx, 5*time.Second, func(res tun.ProbeResult) {
-		if res.Success {
-			ms := res.RTT.Milliseconds()
-			traffic.SetPing(ms)
-			g.statusText.Text = fmt.Sprintf("CONECTADO · %dms", ms)
-			g.statusText.Color = color.NRGBA{R: 52, G: 211, B: 153, A: 255}
-			g.statusText.Refresh()
-			g.AppendLog(fmt.Sprintf("✓ Ping google.com exitoso (%dms) - Tráfico confirmado fluyendo.", ms))
-		} else {
-			traffic.SetPing(0)
-			g.statusText.Text = "CONECTADO · ESPERANDO TRÁFICO..."
-			g.statusText.Color = color.NRGBA{R: 245, G: 158, B: 11, A: 255}
-			g.statusText.Refresh()
-			g.AppendLog(fmt.Sprintf("⚠ Sonda a google.com en espera: %v", res.Err))
-		}
-	})
+		go tun.StartPeriodicPing(ctx, 6*time.Second, func(res tun.ProbeResult) {
+			if res.Success {
+				ms := res.RTT.Milliseconds()
+				traffic.SetPing(ms)
+				g.statusText.Text = fmt.Sprintf("CONECTADO · %dms", ms)
+				g.statusText.Color = color.NRGBA{R: 52, G: 211, B: 153, A: 255}
+				g.statusText.Refresh()
+			} else {
+				traffic.SetPing(0)
+				g.statusText.Text = "CONECTADO · ESPERANDO TRÁFICO..."
+				g.statusText.Color = color.NRGBA{R: 245, G: 158, B: 11, A: 255}
+				g.statusText.Refresh()
+			}
+		})
+	}()
 }
 
 // updateTrayState dynamically updates the system tray menu item and refreshes the OS tray.
