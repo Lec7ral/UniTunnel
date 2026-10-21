@@ -592,8 +592,7 @@ func (g *GUI) toggleConnection() {
 			g.updateTrayState("disconnected")
 
 			g.AppendLog(fmt.Sprintf("✗ [AUTH-FALLO] %v", err))
-			g.AppendLog("🛡 [PROTECCIÓN ACTIVA] Todos los reintentos automáticos han sido cancelados.")
-			g.AppendLog("ℹ CONSEJO: Verifica tu usuario, contraseña y formato de dominio (ej: DOMINIO\\usuario).")
+			g.AppendLog("ℹ [AYUDA] Verifica tu usuario, contraseña y formato de dominio (ej: UCI o uci.cu).")
 
 			errMsg := fmt.Sprintf("El proxy universitario rechazó las credenciales:\n\n%v\n\n🛡 PROTECCIÓN ANTI-BLOQUEO:\nUniTunnel canceló inmediatamente los reintentos automáticos para evitar que Active Directory bloquee tu cuenta institucional.\n\nPor favor verifica tu usuario, contraseña o especifica el dominio si tu red lo requiere.", err)
 			dialog.ShowError(fmt.Errorf("%s", errMsg), g.window)

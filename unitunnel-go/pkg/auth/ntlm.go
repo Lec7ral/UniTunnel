@@ -38,6 +38,20 @@ const (
 
 var ntlmSignature = []byte("NTLMSSP\x00")
 
+// CleanDomain converts FQDN (like uci.cu) to NetBIOS short name (UCI) if applicable
+func CleanDomain(domain string) string {
+	domain = strings.TrimSpace(domain)
+	if domain == "" {
+		return ""
+	}
+	// If domain is FQDN like "uci.cu" or "corp.domain.com", extract primary NetBIOS name "UCI"
+	if strings.Contains(domain, ".") {
+		parts := strings.Split(domain, ".")
+		return strings.ToUpper(parts[0])
+	}
+	return strings.ToUpper(domain)
+}
+
 // SplitDomainUser extracts domain and username from composite formats like DOMAIN\user or user@domain
 func SplitDomainUser(domain, username string) (string, string) {
 	username = strings.TrimSpace(username)
@@ -62,12 +76,12 @@ func SplitDomainUser(domain, username string) (string, string) {
 			domain = parts[1]
 		}
 	}
-	return domain, username
+	return CleanDomain(domain), username
 }
 
 // CreateNegotiateMessage (Type 1)
 func CreateNegotiateMessage(domain, workstation string) string {
-	cleanDomain, _ := SplitDomainUser(domain, "")
+	cleanDomain := CleanDomain(domain)
 	if workstation == "" {
 		workstation = "UNITUNNEL-PC"
 	}
@@ -75,33 +89,45 @@ func CreateNegotiateMessage(domain, workstation string) string {
 	flags := uint32(NegotiateUnicode | NegotiateOEM | RequestTarget | NegotiateNTLM |
 		NegotiateAlwaysSign | NegotiateExtendedSessionSec | Negotiate128 | Negotiate56)
 
-	domainBytes := []byte(strings.ToUpper(cleanDomain))
-	workstationBytes := []byte(strings.ToUpper(workstation))
-
-	if len(domainBytes) > 0 {
-		flags |= NegotiateDomainSupplied
-	}
-	if len(workstationBytes) > 0 {
-		flags |= NegotiateWorkstationSupplied
-	}
-
 	buf := new(bytes.Buffer)
 	buf.Write(ntlmSignature)
 	_ = binary.Write(buf, binary.LittleEndian, uint32(NtLmNegotiate))
-	_ = binary.Write(buf, binary.LittleEndian, flags)
 
-	// Domain security buffer
-	_ = binary.Write(buf, binary.LittleEndian, uint16(len(domainBytes)))
-	_ = binary.Write(buf, binary.LittleEndian, uint16(len(domainBytes)))
-	_ = binary.Write(buf, binary.LittleEndian, uint32(32+len(workstationBytes)))
+	if cleanDomain != "" || workstation != "" {
+		domainBytes := []byte(cleanDomain)
+		workstationBytes := []byte(strings.ToUpper(workstation))
 
-	// Workstation security buffer
-	_ = binary.Write(buf, binary.LittleEndian, uint16(len(workstationBytes)))
-	_ = binary.Write(buf, binary.LittleEndian, uint16(len(workstationBytes)))
-	_ = binary.Write(buf, binary.LittleEndian, uint32(32))
+		if len(domainBytes) > 0 {
+			flags |= NegotiateDomainSupplied
+		}
+		if len(workstationBytes) > 0 {
+			flags |= NegotiateWorkstationSupplied
+		}
+		_ = binary.Write(buf, binary.LittleEndian, flags)
 
-	buf.Write(workstationBytes)
-	buf.Write(domainBytes)
+		// Domain security buffer: len, maxLen, offset
+		_ = binary.Write(buf, binary.LittleEndian, uint16(len(domainBytes)))
+		_ = binary.Write(buf, binary.LittleEndian, uint16(len(domainBytes)))
+		_ = binary.Write(buf, binary.LittleEndian, uint32(32+len(workstationBytes)))
+
+		// Workstation security buffer: len, maxLen, offset
+		_ = binary.Write(buf, binary.LittleEndian, uint16(len(workstationBytes)))
+		_ = binary.Write(buf, binary.LittleEndian, uint16(len(workstationBytes)))
+		_ = binary.Write(buf, binary.LittleEndian, uint32(32))
+
+		buf.Write(workstationBytes)
+		buf.Write(domainBytes)
+	} else {
+		_ = binary.Write(buf, binary.LittleEndian, flags)
+		// Empty domain buffer
+		_ = binary.Write(buf, binary.LittleEndian, uint16(0))
+		_ = binary.Write(buf, binary.LittleEndian, uint16(0))
+		_ = binary.Write(buf, binary.LittleEndian, uint32(32))
+		// Empty workstation buffer
+		_ = binary.Write(buf, binary.LittleEndian, uint16(0))
+		_ = binary.Write(buf, binary.LittleEndian, uint16(0))
+		_ = binary.Write(buf, binary.LittleEndian, uint32(32))
+	}
 
 	return base64.StdEncoding.EncodeToString(buf.Bytes())
 }
@@ -114,6 +140,26 @@ type ChallengeDetails struct {
 	Flags           uint32
 }
 
+// ExtractAvPair parses an AV_PAIR from TargetInfo by ID
+func ExtractAvPair(targetInfo []byte, targetAvId uint16) []byte {
+	for i := 0; i+4 <= len(targetInfo); {
+		avId := binary.LittleEndian.Uint16(targetInfo[i : i+2])
+		avLen := binary.LittleEndian.Uint16(targetInfo[i+2 : i+4])
+		i += 4
+		if avId == 0 { // MsvAvEOL
+			break
+		}
+		if i+int(avLen) > len(targetInfo) {
+			break
+		}
+		if avId == targetAvId {
+			return targetInfo[i : i+int(avLen)]
+		}
+		i += int(avLen)
+	}
+	return nil
+}
+
 // ParseChallengeMessage (Type 2) parses challenge, target info and domain
 func ParseChallengeMessage(b64Message string) (*ChallengeDetails, error) {
 	data, err := base64.StdEncoding.DecodeString(strings.TrimSpace(b64Message))
@@ -122,7 +168,7 @@ func ParseChallengeMessage(b64Message string) (*ChallengeDetails, error) {
 	}
 
 	if len(data) < 32 || !bytes.Equal(data[:8], ntlmSignature) {
-		return nil, err
+		return nil, fmt.Errorf("mensaje NTLM Type-2 inválido o longitud insuficiente (%d bytes)", len(data))
 	}
 
 	res := &ChallengeDetails{
@@ -137,7 +183,12 @@ func ParseChallengeMessage(b64Message string) (*ChallengeDetails, error) {
 		targetNameOffset := binary.LittleEndian.Uint32(data[16:20])
 		if targetNameLen > 0 && int(targetNameOffset+uint32(targetNameLen)) <= len(data) {
 			rawName := data[targetNameOffset : targetNameOffset+uint32(targetNameLen)]
-			res.TargetName = fromUnicode(rawName)
+			if res.Flags&NegotiateUnicode != 0 {
+				res.TargetName = fromUnicode(rawName)
+			} else {
+				res.TargetName = string(rawName)
+			}
+			res.TargetName = strings.TrimRight(res.TargetName, "\x00")
 		}
 	}
 
@@ -148,6 +199,14 @@ func ParseChallengeMessage(b64Message string) (*ChallengeDetails, error) {
 		if targetInfoLen > 0 && int(targetInfoOffset+uint32(targetInfoLen)) <= len(data) {
 			res.TargetInfo = make([]byte, targetInfoLen)
 			copy(res.TargetInfo, data[targetInfoOffset:targetInfoOffset+uint32(targetInfoLen)])
+
+			// If TargetName was not found in header, attempt extracting from TargetInfo (MsvAvNbDomainName 0x0002)
+			if res.TargetName == "" {
+				nbDom := ExtractAvPair(res.TargetInfo, 0x0002)
+				if len(nbDom) > 0 {
+					res.TargetName = strings.TrimRight(fromUnicode(nbDom), "\x00")
+				}
+			}
 		}
 	}
 
@@ -164,13 +223,13 @@ func CreateAuthenticateMessage(domain, username, password, workstation string, c
 	// 1. Compute NT Hash = MD4(UTF-16LE(password))
 	ntHash := md4Sum(toUnicode(password))
 
-	// 2. Compute NTLMv2 Hash = HMAC-MD5(key = ntHash, data = UTF-16LE(UPPER(cleanUser) + cleanDomain))
-	userUnicodeUpper := toUnicode(strings.ToUpper(cleanUser))
-	domainUnicodeUpper := toUnicode(strings.ToUpper(cleanDomain))
+	// 2. Compute NTLMv2 Hash = HMAC-MD5(key = ntHash, data = UTF-16LE(UPPER(cleanUser) + UPPER(cleanDomain)))
+	userUpper := strings.ToUpper(cleanUser)
+	domainUpper := strings.ToUpper(cleanDomain)
 
 	macV2 := hmac.New(md5.New, ntHash)
-	macV2.Write(userUnicodeUpper)
-	macV2.Write(domainUnicodeUpper)
+	macV2.Write(toUnicode(userUpper))
+	macV2.Write(toUnicode(domainUpper))
 	ntlmV2Hash := macV2.Sum(nil)
 
 	// 3. Generate 8-byte random client nonce
@@ -179,23 +238,28 @@ func CreateAuthenticateMessage(domain, username, password, workstation string, c
 		binary.LittleEndian.PutUint64(clientNonce, uint64(time.Now().UnixNano()))
 	}
 
-	// 4. Construct NTLMv2 Client Blob
-	// Blob format: Signature (0x01010000) + Reserved + Timestamp + ClientNonce + Reserved + TargetInfo + EndReserved
+	// 4. Construct NTLMv2 Client Blob (MS-NLMP section 2.2.2.1)
 	blob := new(bytes.Buffer)
-	blob.Write([]byte{0x01, 0x01, 0x00, 0x00}) // Signature
-	blob.Write([]byte{0x00, 0x00, 0x00, 0x00}) // Reserved
+	blob.Write([]byte{0x01, 0x01, 0x00, 0x00}) // Signature: RespType=1, HiRespType=1, Reserved1=0
+	blob.Write([]byte{0x00, 0x00, 0x00, 0x00}) // Reserved2
 
 	// Windows FileTime: 100-nanosecond intervals since January 1, 1601 UTC
 	fileTime := uint64((time.Now().UnixNano() / 100) + 116444736000000000)
 	_ = binary.Write(blob, binary.LittleEndian, fileTime)
 
 	blob.Write(clientNonce)
-	blob.Write([]byte{0x00, 0x00, 0x00, 0x00}) // Reserved
+	blob.Write([]byte{0x00, 0x00, 0x00, 0x00}) // Reserved3
 
 	if len(targetInfo) > 0 {
 		blob.Write(targetInfo)
+		// Ensure targetInfo ends with MsvAvEOL (4 zero bytes)
+		if len(targetInfo) < 4 || !bytes.Equal(targetInfo[len(targetInfo)-4:], []byte{0, 0, 0, 0}) {
+			blob.Write([]byte{0x00, 0x00, 0x00, 0x00})
+		}
+	} else {
+		blob.Write([]byte{0x00, 0x00, 0x00, 0x00})
 	}
-	blob.Write([]byte{0x00, 0x00, 0x00, 0x00}) // End Reserved
+	blob.Write([]byte{0x00, 0x00, 0x00, 0x00}) // Reserved4
 
 	blobBytes := blob.Bytes()
 
@@ -215,11 +279,21 @@ func CreateAuthenticateMessage(domain, username, password, workstation string, c
 	lmResponse := append(lmProof, clientNonce...)
 
 	userUnicode := toUnicode(cleanUser)
-	domainUnicode := toUnicode(strings.ToUpper(cleanDomain))
+	domainUnicode := toUnicode(domainUpper)
 	workstationUnicode := toUnicode(strings.ToUpper(workstation))
 
 	flags := uint32(NegotiateUnicode | RequestTarget | NegotiateNTLM |
 		NegotiateAlwaysSign | NegotiateExtendedSessionSec | Negotiate128 | Negotiate56)
+
+	if len(domainUnicode) > 0 {
+		flags |= NegotiateDomainSupplied
+	}
+	if len(workstationUnicode) > 0 {
+		flags |= NegotiateWorkstationSupplied
+	}
+	if len(targetInfo) > 0 {
+		flags |= NegotiateTargetInfo
+	}
 
 	payloadOffset := 64
 	domainOffset := payloadOffset

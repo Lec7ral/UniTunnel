@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,6 +23,7 @@ type Dialer struct {
 	mu             sync.RWMutex
 	authLocked     bool
 	authLockReason string
+	inPrecheck     bool
 	OnAuthError    func(err error)
 	OnLog          func(msg string)
 }
@@ -59,34 +61,164 @@ func (d *Dialer) IsAuthLocked() (bool, string) {
 
 func (d *Dialer) tripAuthLock(err error, reason string) {
 	d.mu.Lock()
+	alreadyLocked := d.authLocked
 	d.authLocked = true
 	d.authLockReason = reason
 	d.mu.Unlock()
 
-	if d.OnLog != nil {
-		d.OnLog(fmt.Sprintf("🛡 [PROTECCIÓN ACTIVA] %s", reason))
-		d.OnLog("🛡 [PROTECCIÓN ACTIVA] Reintentos cancelados para prevenir el bloqueo de tu cuenta institucional.")
+	if !alreadyLocked {
+		if d.OnLog != nil {
+			d.OnLog(fmt.Sprintf("🛡 [PROTECCIÓN ACTIVA] %s", reason))
+			d.OnLog("🛡 [PROTECCIÓN ACTIVA] Reintentos cancelados para prevenir el bloqueo de tu cuenta institucional.")
+		}
+
+		if d.OnAuthError != nil && !d.inPrecheck {
+			go d.OnAuthError(err)
+		}
+	}
+}
+
+// httpResponse represents a parsed HTTP CONNECT response
+type httpResponse struct {
+	statusCode    int
+	statusText    string
+	proto         string
+	headers       map[string]string
+	ntlmChallenge string
+	hasNTLM       bool
+	hasBasic      bool
+	server        string
+	via           string
+	squidError    string
+	contentLength int
+	connection    string
+	proxyConn     string
+}
+
+// readHTTPResponse reads status line, headers, and drains entity body to keep socket in sync
+func readHTTPResponse(reader *bufio.Reader) (*httpResponse, error) {
+	statusLine, err := reader.ReadString('\n')
+	if err != nil {
+		return nil, err
+	}
+	statusLine = strings.TrimSpace(statusLine)
+	if statusLine == "" {
+		return nil, errors.New("respuesta vacía del servidor proxy")
 	}
 
-	if d.OnAuthError != nil {
-		go d.OnAuthError(err)
+	parts := strings.SplitN(statusLine, " ", 3)
+	if len(parts) < 2 {
+		return nil, fmt.Errorf("línea de estado HTTP inválida recibida del proxy: '%s'", statusLine)
 	}
+
+	code, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return nil, fmt.Errorf("código de estado numérico inválido en '%s': %w", statusLine, err)
+	}
+
+	statusText := ""
+	if len(parts) >= 3 {
+		statusText = parts[2]
+	}
+
+	resp := &httpResponse{
+		statusCode:    code,
+		statusText:    statusText,
+		proto:         parts[0],
+		headers:       make(map[string]string),
+		contentLength: -1,
+	}
+
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return nil, err
+		}
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			break
+		}
+
+		colonIdx := strings.Index(trimmed, ":")
+		if colonIdx > 0 {
+			key := strings.ToLower(strings.TrimSpace(trimmed[:colonIdx]))
+			val := strings.TrimSpace(trimmed[colonIdx+1:])
+			resp.headers[key] = val
+
+			switch key {
+			case "server":
+				resp.server = val
+			case "via":
+				resp.via = val
+			case "x-squid-error":
+				resp.squidError = val
+			case "connection":
+				resp.connection = strings.ToLower(val)
+			case "proxy-connection":
+				resp.proxyConn = strings.ToLower(val)
+			case "content-length":
+				if cl, err := strconv.Atoi(val); err == nil {
+					resp.contentLength = cl
+				}
+			case "proxy-authenticate":
+				valLower := strings.ToLower(val)
+				if strings.Contains(valLower, "ntlm") {
+					resp.hasNTLM = true
+					fields := strings.Fields(val)
+					if len(fields) >= 2 {
+						resp.ntlmChallenge = fields[1]
+					}
+				}
+				if strings.Contains(valLower, "basic") {
+					resp.hasBasic = true
+				}
+			}
+		}
+	}
+
+	// Drain any response body so the socket stream remains perfectly synchronized
+	// CONNECT 200 responses do not contain bodies (the raw TCP tunnel begins immediately)
+	if resp.statusCode != 200 {
+		if resp.contentLength > 0 {
+			_, _ = io.CopyN(io.Discard, reader, int64(resp.contentLength))
+		} else if strings.EqualFold(resp.headers["transfer-encoding"], "chunked") {
+			for {
+				chunkLenLine, err := reader.ReadString('\n')
+				if err != nil {
+					break
+				}
+				chunkLenLine = strings.TrimSpace(chunkLenLine)
+				chunkLen, err := strconv.ParseInt(chunkLenLine, 16, 64)
+				if err != nil || chunkLen <= 0 {
+					_, _ = reader.ReadString('\n')
+					break
+				}
+				_, _ = io.CopyN(io.Discard, reader, chunkLen)
+				_, _ = reader.ReadString('\n')
+			}
+		}
+	}
+
+	return resp, nil
 }
 
 // VerifyCredentials performs a single controlled pre-flight check to test proxy authentication
 // without routing system traffic or flooding requests.
 func (d *Dialer) VerifyCredentials() error {
 	d.ResetAuthLock()
+	d.inPrecheck = true
+	defer func() { d.inPrecheck = false }()
+
 	proxyAddr := d.ProxyAddress()
 
 	conn, err := net.DialTimeout("tcp", proxyAddr, 8*time.Second)
 	if err != nil {
-		return fmt.Errorf("no se pudo alcanzar el proxy en %s: %w", proxyAddr, err)
+		return fmt.Errorf("no se pudo conectar con el proxy en %s: %w", proxyAddr, err)
 	}
 	defer conn.Close()
 
 	account := d.cfg.GetActiveAccount()
-	if account == nil || account.Username == "" {
+	if account == nil || strings.TrimSpace(account.Username) == "" {
 		return errors.New("no hay credenciales de usuario configuradas")
 	}
 
@@ -145,11 +277,17 @@ func (d *Dialer) negotiateConnect(conn net.Conn, targetAddr string, account *con
 		cleanDomain, cleanUser = auth.SplitDomainUser(account.Domain, account.Username)
 	}
 
-	// Step 1: Initial CONNECT request
-	connectReq := fmt.Sprintf("CONNECT %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: UniTunnel/2.4\r\nProxy-Connection: keep-alive\r\n", targetAddr, targetAddr)
-
 	useNTLM := (d.authScheme == auth.AuthTypeNTLM || d.authScheme == "auto" || d.authScheme == "")
 	useBasic := (d.authScheme == auth.AuthTypeBasic)
+
+	reader := bufio.NewReader(conn)
+
+	// Step 1: Initial CONNECT request
+	connectReq := fmt.Sprintf("CONNECT %s HTTP/1.1\r\n"+
+		"Host: %s\r\n"+
+		"User-Agent: UniTunnel/2.4\r\n"+
+		"Proxy-Connection: keep-alive\r\n"+
+		"Connection: keep-alive\r\n", targetAddr, targetAddr)
 
 	if account != nil && cleanUser != "" {
 		if useBasic {
@@ -158,177 +296,138 @@ func (d *Dialer) negotiateConnect(conn net.Conn, targetAddr string, account *con
 		} else if useNTLM {
 			type1 := auth.CreateNegotiateMessage(cleanDomain, "UNITUNNEL-PC")
 			connectReq += fmt.Sprintf("Proxy-Authorization: NTLM %s\r\n", type1)
+			if d.OnLog != nil && !d.inPrecheck {
+				d.OnLog(fmt.Sprintf("[AUTH-NTLM] Paso 1: Enviando negociación inicial NTLM (Type-1) hacia %s...", proxyAddr))
+			}
 		}
 	}
 	connectReq += "\r\n"
 
-	_, err := conn.Write([]byte(connectReq))
-	if err != nil {
+	if _, err := conn.Write([]byte(connectReq)); err != nil {
 		return nil, fmt.Errorf("error al enviar petición CONNECT a %s: %w", proxyAddr, err)
 	}
 
-	reader := bufio.NewReader(conn)
-	statusLine, err := reader.ReadString('\n')
+	resp1, err := readHTTPResponse(reader)
 	if err != nil {
 		return nil, fmt.Errorf("error leyendo respuesta inicial del proxy %s: %w", proxyAddr, err)
 	}
 
-	// 200 OK: Tunnel established
-	if strings.Contains(statusLine, "200") {
-		for {
-			line, err := reader.ReadString('\n')
-			if err != nil || line == "\r\n" || line == "\n" {
-				break
-			}
-		}
+	// 200 OK: Tunnel established directly (unauthenticated proxy or already authorized)
+	if resp1.statusCode == 200 {
 		return &bufferedConn{Conn: conn, reader: reader}, nil
 	}
 
 	// 407: Proxy Authentication Required
-	if strings.Contains(statusLine, "407") {
-		var ntlmChallenge string
-		var squidError string
-		var proxyServer string
-		hasNTLM := false
-		hasBasic := false
-
-		for {
-			line, err := reader.ReadString('\n')
-			if err != nil || line == "\r\n" || line == "\n" {
-				break
-			}
-			trimmed := strings.TrimSpace(line)
-			lower := strings.ToLower(trimmed)
-
-			if strings.HasPrefix(lower, "proxy-authenticate:") {
-				val := strings.TrimSpace(trimmed[len("proxy-authenticate:"):])
-				if strings.HasPrefix(strings.ToLower(val), "ntlm") {
-					hasNTLM = true
-					parts := strings.Fields(val)
-					if len(parts) >= 2 {
-						ntlmChallenge = parts[1]
-					}
-				} else if strings.Contains(strings.ToLower(val), "basic") {
-					hasBasic = true
-				}
-			} else if strings.HasPrefix(lower, "x-squid-error:") {
-				squidError = strings.TrimSpace(trimmed[len("x-squid-error:"):])
-			} else if strings.HasPrefix(lower, "server:") {
-				proxyServer = strings.TrimSpace(trimmed[len("server:"):])
-			}
-		}
-
-		// Case 1: Proxy returned Type 2 NTLM Challenge
-		if hasNTLM && ntlmChallenge != "" && account != nil && cleanUser != "" {
+	if resp1.statusCode == 407 {
+		// Case 1: Proxy responded to Type-1 with Type-2 Challenge
+		if resp1.hasNTLM && resp1.ntlmChallenge != "" && account != nil && cleanUser != "" {
 			d.authScheme = auth.AuthTypeNTLM
-			chDetails, err := auth.ParseChallengeMessage(ntlmChallenge)
+			chDetails, err := auth.ParseChallengeMessage(resp1.ntlmChallenge)
 			if err != nil {
 				return nil, fmt.Errorf("error decodificando challenge NTLM del proxy: %w", err)
 			}
 
-			// If domain was not supplied by user, infer from proxy challenge
+			// Domain resolution:
+			// If server challenge specifies TargetName (e.g., "UCI"), use it if user domain is empty or matches prefix
 			authDomain := cleanDomain
-			if authDomain == "" && chDetails.TargetName != "" {
-				authDomain = chDetails.TargetName
+			if chDetails.TargetName != "" {
+				if authDomain == "" || strings.HasPrefix(strings.ToUpper(authDomain), strings.ToUpper(chDetails.TargetName)) || strings.HasPrefix(strings.ToUpper(chDetails.TargetName), strings.ToUpper(authDomain)) {
+					authDomain = chDetails.TargetName
+				}
+			}
+
+			if d.OnLog != nil {
+				serverDesc := resp1.server
+				if serverDesc == "" {
+					serverDesc = "Squid"
+				}
+				d.OnLog(fmt.Sprintf("[AUTH-NTLM] Paso 2: Desafío recibido de %s (%s). Dominio detectado: '%s'",
+					proxyAddr, serverDesc, authDomain))
+				d.OnLog(fmt.Sprintf("[AUTH-NTLM] Paso 3: Enviando credenciales para usuario '%s' (Dominio: '%s')...",
+					cleanUser, authDomain))
 			}
 
 			type3 := auth.CreateAuthenticateMessage(authDomain, cleanUser, account.Password, "UNITUNNEL-PC", chDetails.ServerChallenge, chDetails.TargetInfo)
-			type3Req := fmt.Sprintf("CONNECT %s HTTP/1.1\r\nHost: %s\r\nProxy-Authorization: NTLM %s\r\nProxy-Connection: keep-alive\r\n\r\n", targetAddr, targetAddr, type3)
+			type3Req := fmt.Sprintf("CONNECT %s HTTP/1.1\r\n"+
+				"Host: %s\r\n"+
+				"User-Agent: UniTunnel/2.4\r\n"+
+				"Proxy-Connection: keep-alive\r\n"+
+				"Connection: keep-alive\r\n"+
+				"Proxy-Authorization: NTLM %s\r\n\r\n", targetAddr, targetAddr, type3)
 
-			_, err = conn.Write([]byte(type3Req))
-			if err != nil {
+			if _, err := conn.Write([]byte(type3Req)); err != nil {
 				return nil, fmt.Errorf("error enviando NTLM Type-3: %w", err)
 			}
 
-			statusLine2, err := reader.ReadString('\n')
+			resp2, err := readHTTPResponse(reader)
 			if err != nil {
 				return nil, fmt.Errorf("error leyendo respuesta NTLM Type-3: %w", err)
 			}
 
-			if strings.Contains(statusLine2, "200") {
-				for {
-					line, err := reader.ReadString('\n')
-					if err != nil || line == "\r\n" || line == "\n" {
-						break
-					}
+			if resp2.statusCode == 200 {
+				if d.OnLog != nil {
+					d.OnLog(fmt.Sprintf("✓ [AUTH-EXITO] ¡Autenticación NTLM exitosa! Túnel establecido con %s.", proxyAddr))
 				}
 				return &bufferedConn{Conn: conn, reader: reader}, nil
 			}
 
-			// Parse Type-3 rejection headers
-			type3SquidErr := ""
-			for {
-				line, err := reader.ReadString('\n')
-				if err != nil || line == "\r\n" || line == "\n" {
-					break
-				}
-				lower := strings.ToLower(line)
-				if strings.HasPrefix(lower, "x-squid-error:") {
-					type3SquidErr = strings.TrimSpace(line[len("x-squid-error:"):])
-				}
+			// Type-3 rejected
+			serverDesc := resp2.server
+			if serverDesc == "" {
+				serverDesc = resp1.server
 			}
-
-			errMsg := fmt.Sprintf("autenticación NTLM rechazada por el servidor %s (%s). Código: %s",
-				proxyAddr, proxyServer, strings.TrimSpace(statusLine2))
-			if type3SquidErr != "" {
-				errMsg += fmt.Sprintf(" · Squid: %s", type3SquidErr)
+			errMsg := fmt.Sprintf("autenticación NTLM rechazada por el proxy %s (%s, HTTP %d)",
+				proxyAddr, serverDesc, resp2.statusCode)
+			if resp2.squidError != "" {
+				errMsg += fmt.Sprintf(" · Error Squid: %s", resp2.squidError)
 			}
-			authErr := fmt.Errorf("%s (verifica usuario, dominio o contraseña)", errMsg)
+			authErr := fmt.Errorf("%s (verifica usuario '%s', dominio '%s' o contraseña)", errMsg, cleanUser, authDomain)
 			d.tripAuthLock(authErr, "Credenciales NTLM rechazadas por el proxy")
 			return nil, authErr
 		}
 
-		// Case 2: Proxy offers NTLM but did not receive Type 1 yet (auto mode or unauthenticated first probe)
-		if hasNTLM && ntlmChallenge == "" && account != nil && cleanUser != "" {
+		// Case 2: Proxy offers NTLM but did not receive Type-1 yet
+		if resp1.hasNTLM && resp1.ntlmChallenge == "" && account != nil && cleanUser != "" {
 			d.authScheme = auth.AuthTypeNTLM
 			type1 := auth.CreateNegotiateMessage(cleanDomain, "UNITUNNEL-PC")
-			type1Req := fmt.Sprintf("CONNECT %s HTTP/1.1\r\nHost: %s\r\nProxy-Authorization: NTLM %s\r\nProxy-Connection: keep-alive\r\n\r\n", targetAddr, targetAddr, type1)
+			type1Req := fmt.Sprintf("CONNECT %s HTTP/1.1\r\n"+
+				"Host: %s\r\n"+
+				"User-Agent: UniTunnel/2.4\r\n"+
+				"Proxy-Connection: keep-alive\r\n"+
+				"Connection: keep-alive\r\n"+
+				"Proxy-Authorization: NTLM %s\r\n\r\n", targetAddr, targetAddr, type1)
 
-			_, err = conn.Write([]byte(type1Req))
-			if err != nil {
+			if _, err := conn.Write([]byte(type1Req)); err != nil {
 				return nil, fmt.Errorf("error enviando NTLM Type-1: %w", err)
 			}
 
-			statusLineType1, err := reader.ReadString('\n')
+			respT1, err := readHTTPResponse(reader)
 			if err != nil {
 				return nil, fmt.Errorf("error leyendo respuesta Type-1: %w", err)
 			}
 
-			if strings.Contains(statusLineType1, "407") {
-				var chB64 string
-				for {
-					l, e := reader.ReadString('\n')
-					if e != nil || l == "\r\n" || l == "\n" {
-						break
-					}
-					t := strings.TrimSpace(l)
-					if strings.HasPrefix(strings.ToLower(t), "proxy-authenticate:") {
-						val := strings.TrimSpace(t[len("proxy-authenticate:"):])
-						parts := strings.Fields(val)
-						if len(parts) >= 2 && strings.EqualFold(parts[0], "ntlm") {
-							chB64 = parts[1]
-						}
-					}
-				}
-
-				if chB64 != "" {
-					chDetails, err := auth.ParseChallengeMessage(chB64)
-					if err == nil {
-						authDomain := cleanDomain
-						if authDomain == "" && chDetails.TargetName != "" {
+			if respT1.statusCode == 407 && respT1.ntlmChallenge != "" {
+				chDetails, err := auth.ParseChallengeMessage(respT1.ntlmChallenge)
+				if err == nil {
+					authDomain := cleanDomain
+					if chDetails.TargetName != "" {
+						if authDomain == "" || strings.HasPrefix(strings.ToUpper(authDomain), strings.ToUpper(chDetails.TargetName)) || strings.HasPrefix(strings.ToUpper(chDetails.TargetName), strings.ToUpper(authDomain)) {
 							authDomain = chDetails.TargetName
 						}
-						type3 := auth.CreateAuthenticateMessage(authDomain, cleanUser, account.Password, "UNITUNNEL-PC", chDetails.ServerChallenge, chDetails.TargetInfo)
-						type3Req := fmt.Sprintf("CONNECT %s HTTP/1.1\r\nHost: %s\r\nProxy-Authorization: NTLM %s\r\nProxy-Connection: keep-alive\r\n\r\n", targetAddr, targetAddr, type3)
-						_, _ = conn.Write([]byte(type3Req))
+					}
 
-						statusFinal, err := reader.ReadString('\n')
-						if err == nil && strings.Contains(statusFinal, "200") {
-							for {
-								l, e := reader.ReadString('\n')
-								if e != nil || l == "\r\n" || l == "\n" {
-									break
-								}
+					type3 := auth.CreateAuthenticateMessage(authDomain, cleanUser, account.Password, "UNITUNNEL-PC", chDetails.ServerChallenge, chDetails.TargetInfo)
+					type3Req := fmt.Sprintf("CONNECT %s HTTP/1.1\r\n"+
+						"Host: %s\r\n"+
+						"User-Agent: UniTunnel/2.4\r\n"+
+						"Proxy-Connection: keep-alive\r\n"+
+						"Connection: keep-alive\r\n"+
+						"Proxy-Authorization: NTLM %s\r\n\r\n", targetAddr, targetAddr, type3)
+					if _, err := conn.Write([]byte(type3Req)); err == nil {
+						respFinal, err := readHTTPResponse(reader)
+						if err == nil && respFinal.statusCode == 200 {
+							if d.OnLog != nil {
+								d.OnLog(fmt.Sprintf("✓ [AUTH-EXITO] ¡Autenticación NTLM exitosa! Túnel establecido con %s.", proxyAddr))
 							}
 							return &bufferedConn{Conn: conn, reader: reader}, nil
 						}
@@ -338,36 +437,38 @@ func (d *Dialer) negotiateConnect(conn net.Conn, targetAddr string, account *con
 		}
 
 		// Case 3: Basic authentication fallback
-		if hasBasic && account != nil && cleanUser != "" {
+		if resp1.hasBasic && account != nil && cleanUser != "" {
 			d.authScheme = auth.AuthTypeBasic
 			cred := base64.StdEncoding.EncodeToString([]byte(cleanUser + ":" + account.Password))
-			req := fmt.Sprintf("CONNECT %s HTTP/1.1\r\nHost: %s\r\nProxy-Authorization: Basic %s\r\nProxy-Connection: keep-alive\r\n\r\n", targetAddr, targetAddr, cred)
-			_, err = conn.Write([]byte(req))
-			if err != nil {
+			req := fmt.Sprintf("CONNECT %s HTTP/1.1\r\n"+
+				"Host: %s\r\n"+
+				"User-Agent: UniTunnel/2.4\r\n"+
+				"Proxy-Connection: keep-alive\r\n"+
+				"Connection: keep-alive\r\n"+
+				"Proxy-Authorization: Basic %s\r\n\r\n", targetAddr, targetAddr, cred)
+			if _, err := conn.Write([]byte(req)); err != nil {
 				return nil, err
 			}
-			resp3, err := reader.ReadString('\n')
-			if err == nil && strings.Contains(resp3, "200") {
-				for {
-					l, e := reader.ReadString('\n')
-					if e != nil || l == "\r\n" || l == "\n" {
-						break
-					}
+			respBasic, err := readHTTPResponse(reader)
+			if err == nil && respBasic.statusCode == 200 {
+				if d.OnLog != nil {
+					d.OnLog(fmt.Sprintf("✓ [AUTH-EXITO] ¡Autenticación Basic exitosa! Túnel establecido con %s.", proxyAddr))
 				}
 				return &bufferedConn{Conn: conn, reader: reader}, nil
 			}
 		}
 
-		errDesc := fmt.Sprintf("autenticación rechazada por el proxy %s (servidor: %s)", proxyAddr, proxyServer)
-		if squidError != "" {
-			errDesc += fmt.Sprintf(" [Squid: %s]", squidError)
+		errDesc := fmt.Sprintf("autenticación rechazada por el proxy %s (servidor: %s, HTTP %d)",
+			proxyAddr, resp1.server, resp1.statusCode)
+		if resp1.squidError != "" {
+			errDesc += fmt.Sprintf(" [Squid: %s]", resp1.squidError)
 		}
 		authErr := fmt.Errorf("%s. Revisa tus credenciales.", errDesc)
 		d.tripAuthLock(authErr, "Proxy rechazó credenciales")
 		return nil, authErr
 	}
 
-	return nil, fmt.Errorf("proxy retornó estado inesperado: %s", strings.TrimSpace(statusLine))
+	return nil, fmt.Errorf("proxy retornó estado HTTP inesperado: %d %s", resp1.statusCode, resp1.statusText)
 }
 
 // Pipe forwards bidirectional traffic between two connections
