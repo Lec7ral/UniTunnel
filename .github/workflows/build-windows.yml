@@ -52,27 +52,58 @@ jobs:
           # Tidy dependencies
           go mod tidy
           
+          # Detect target package location (supports both ./cmd/unitunnel and root . structures)
+          $buildDir = "."
+          if (Test-Path "cmd\unitunnel\main.go") {
+            $buildDir = "cmd\unitunnel"
+          } elseif (Test-Path "main.go") {
+            $buildDir = "."
+          }
+          Write-Host "Target Go package detected: $buildDir"
+          
           # Ensure Windows resource object (rsrc_windows_amd64.syso) embeds custom icon and manifest
           if (Get-Command windres -ErrorAction SilentlyContinue) {
-            Write-Host "Compiling Windows resource object with windres..."
-            Push-Location cmd\unitunnel
-            windres -i unitunnel.rc -O coff -o rsrc_windows_amd64.syso
-            Pop-Location
+            if ($buildDir -ne "." -and (Test-Path "$buildDir\unitunnel.rc")) {
+              Write-Host "Compiling Windows resource object with windres in $buildDir..."
+              Push-Location $buildDir
+              windres -i unitunnel.rc -O coff -o rsrc_windows_amd64.syso
+              Pop-Location
+            } elseif (Test-Path "unitunnel.rc") {
+              Write-Host "Compiling Windows resource object with windres in current directory..."
+              windres -i unitunnel.rc -O coff -o rsrc_windows_amd64.syso
+            }
+          }
+
+          # Ensure output dist directory exists
+          if (!(Test-Path "..\dist")) {
+            New-Item -ItemType Directory -Force -Path "..\dist"
           }
 
           # Compile without opening background CMD console (-H windowsgui)
-          # Go automatically embeds cmd\unitunnel\rsrc_windows_amd64.syso into unitunnel.exe
+          # Go automatically embeds rsrc_windows_amd64.syso located alongside main.go
           # -s -w strips debug symbols for smaller binary size
-          go build -ldflags="-H windowsgui -s -w" -o ..\dist\unitunnel.exe .\cmd\unitunnel
+          Write-Host "Compiling Go binary..."
+          if ($buildDir -eq ".") {
+            go build -ldflags="-H windowsgui -s -w" -o ..\dist\unitunnel.exe .
+          } else {
+            go build -ldflags="-H windowsgui -s -w" -o ..\dist\unitunnel.exe .\$buildDir
+          }
           
           Write-Host "Build complete: dist\unitunnel.exe (with embedded custom icon and UAC manifest)"
 
       - name: Prepare Release Distribution Package
         run: |
           # Copy default config file and assets (icon)
-          Copy-Item -Path "unitunnel-go\config.example.json" -Destination "dist\config.json"
+          if (Test-Path "unitunnel-go\config.example.json") {
+            Copy-Item -Path "unitunnel-go\config.example.json" -Destination "dist\config.json" -Force
+          } elseif (Test-Path "config.example.json") {
+            Copy-Item -Path "config.example.json" -Destination "dist\config.json" -Force
+          }
+
           if (Test-Path "unitunnel-go\assets") {
             Copy-Item -Recurse -Path "unitunnel-go\assets" -Destination "dist\assets" -Force
+          } elseif (Test-Path "assets") {
+            Copy-Item -Recurse -Path "assets" -Destination "dist\assets" -Force
           }
           
           # Create UAC requireAdministrator manifest

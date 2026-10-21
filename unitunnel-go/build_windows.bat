@@ -11,9 +11,13 @@ cd /d "%~dp0"
 where windres >nul 2>nul
 if %ERRORLEVEL% EQU 0 (
     echo [*] Compilando recursos PE (icono + manifiesto de Administrador)...
-    cd cmd\unitunnel
-    windres -i unitunnel.rc -O coff -o rsrc_windows_amd64.syso
-    cd ..\..
+    if exist "cmd\unitunnel\unitunnel.rc" (
+        cd cmd\unitunnel
+        windres -i unitunnel.rc -O coff -o rsrc_windows_amd64.syso
+        cd ..\..
+    ) else if exist "unitunnel.rc" (
+        windres -i unitunnel.rc -O coff -o rsrc_windows_amd64.syso
+    )
 ) else (
     echo [i] windres no encontrado, utilizando rsrc_windows_amd64.syso precompilado.
 )
@@ -32,7 +36,11 @@ set CGO_ENABLED=1
 
 :: 5. Compilar ejecutable sin consola de fondo (-H windowsgui)
 echo [*] Compilando binario unitunnel.exe con icono incrustado...
-go build -ldflags="-H windowsgui -s -w" -o ..\dist\unitunnel.exe .\cmd\unitunnel
+if exist "cmd\unitunnel\main.go" (
+    go build -ldflags="-H windowsgui -s -w" -o ..\dist\unitunnel.exe .\cmd\unitunnel
+) else (
+    go build -ldflags="-H windowsgui -s -w" -o ..\dist\unitunnel.exe .
+)
 
 if %ERRORLEVEL% EQU 0 (
     echo.

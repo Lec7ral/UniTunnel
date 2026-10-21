@@ -22,6 +22,12 @@ unitunnel
 unitunnel.exe
 wintun.dll
 
+# Explicitly track Windows PE resources and icons
+!*.syso
+!*.rc
+!*.manifest
+!*.ico
+
 # Personal configuration & local credentials (use config.example.json instead)
 unitunnel-go/config.json
 
