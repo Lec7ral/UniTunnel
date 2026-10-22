@@ -124,6 +124,12 @@ func OpenWintun(cfg *config.Config, onLog func(string)) (*WintunDevice, error) {
 	}
 
 	// 4. Launch tun2socks windowless with working directory set to application directory
+	socksPort := cfg.LocalSocksPort
+	if socksPort == 0 {
+		socksPort = 1080
+	}
+	socksURL := fmt.Sprintf("socks5://127.0.0.1:%d", socksPort)
+
 	cmd := exec.Command(tun2socksPath,
 		"-device", fmt.Sprintf("tun://%s", adapterName),
 		"-proxy", socksURL,
