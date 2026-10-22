@@ -476,7 +476,14 @@ func (d *Dialer) negotiateConnect(conn net.Conn, targetAddr string, account *con
 		return nil, authErr
 	}
 
-	return nil, fmt.Errorf("proxy retornó estado HTTP inesperado: %d %s", resp1.statusCode, resp1.statusText)
+	errMsg := fmt.Sprintf("proxy rechazó conexión hacia %s (HTTP %d %s)", targetAddr, resp1.statusCode, resp1.statusText)
+	if resp1.squidError != "" {
+		errMsg += fmt.Sprintf(" [Squid: %s]", resp1.squidError)
+	}
+	if resp1.statusCode == 403 {
+		errMsg += " · El proxy bloqueó este puerto o IP (Squid solo permite puerto 443/HTTPS; en Telegram usa Proxy HTTP hacia 127.0.0.1:8081)"
+	}
+	return nil, errors.New(errMsg)
 }
 
 // Pipe forwards bidirectional traffic between two connections

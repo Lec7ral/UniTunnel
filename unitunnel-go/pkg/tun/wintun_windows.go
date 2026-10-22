@@ -62,6 +62,9 @@ func CleanStaleRoutes(proxyHost, tunIP string) {
 	if proxyHost != "" {
 		_ = runHidden("route", "delete", proxyHost, "mask", "255.255.255.255")
 	}
+	_ = runHidden("route", "delete", "10.0.0.0", "mask", "255.0.0.0")
+	_ = runHidden("route", "delete", "172.16.0.0", "mask", "255.240.0.0")
+	_ = runHidden("route", "delete", "192.168.0.0", "mask", "255.255.0.0")
 }
 
 // OpenWintun initializes Wintun virtual adapter, starts tun2socks, and configures routing safely
@@ -192,36 +195,24 @@ func OpenWintun(cfg *config.Config, onLog func(string)) (*WintunDevice, error) {
 
 	time.Sleep(250 * time.Millisecond)
 
-	// 7. Assign DNS servers on Wintun adapter (validate=no prevents netsh from blocking)
-	_ = runHidden("netsh", "interface", "ip", "set", "dns",
-		fmt.Sprintf("name=\"%s\"", adapterName),
-		"static",
-		"1.1.1.1",
-		"validate=no",
-	)
-	_ = runHidden("netsh", "interface", "ip", "add", "dns",
-		fmt.Sprintf("name=\"%s\"", adapterName),
-		"8.8.8.8",
-		"index=2",
-		"validate=no",
-	)
+	// 7. Configure DNS and Subnet Routing:
+	// In institutional proxy environments (like UCI), public DNS (1.1.1.1, 8.8.8.8) cannot be reached via UDP
+	// through the campus firewall. Instead, Windows uses the institutional DNS server from the physical adapter.
+	// We add explicit bypass routes for institutional & private subnets so local DNS queries and intranet work directly.
+	_ = runHidden("route", "add", cfg.ProxyHost, "mask", "255.255.255.255", gw, "metric", "5")
+	_ = runHidden("route", "add", "10.0.0.0", "mask", "255.0.0.0", gw, "metric", "5")
+	_ = runHidden("route", "add", "172.16.0.0", "mask", "255.240.0.0", gw, "metric", "5")
+	_ = runHidden("route", "add", "192.168.0.0", "mask", "255.255.0.0", gw, "metric", "5")
 
-	// 8. Configure System Routing Table
-	// Step A: Bypass route to proxy server via original physical gateway (PREVENTS RECURSIVE ROUTING LOOPS)
-	err := runHidden("route", "add", cfg.ProxyHost, "mask", "255.255.255.255", gw, "metric", "5")
-	if err != nil && onLog != nil {
-		onLog(fmt.Sprintf("ℹ Nota ruta bypass proxy: %v", err))
-	}
-
-	// Step B: Direct 0.0.0.0/1 and 128.0.0.0/1 through virtual TUN adapter
+	// 8. Direct all public internet traffic (0.0.0.0/1 and 128.0.0.0/1) through virtual TUN adapter
 	// (Split default route technique: overrides default 0.0.0.0/0 without deleting physical default gateway)
 	err1 := runHidden("route", "add", "0.0.0.0", "mask", "128.0.0.0", tunIP, "metric", "1")
 	if err1 != nil {
-		err1 = runHidden("netsh", "interface", "ipv4", "add", "route", "0.0.0.0/1", fmt.Sprintf("\"%s\"", adapterName), tunIP, "metric=1")
+		err1 = runHidden("netsh", "interface", "ipv4", "add", "route", "0.0.0.0/1", adapterName, tunIP, "metric=1")
 	}
 	err2 := runHidden("route", "add", "128.0.0.0", "mask", "128.0.0.0", tunIP, "metric", "1")
 	if err2 != nil {
-		err2 = runHidden("netsh", "interface", "ipv4", "add", "route", "128.0.0.0/1", fmt.Sprintf("\"%s\"", adapterName), tunIP, "metric=1")
+		err2 = runHidden("netsh", "interface", "ipv4", "add", "route", "128.0.0.0/1", adapterName, tunIP, "metric=1")
 	}
 	if err1 != nil || err2 != nil {
 		return nil, fmt.Errorf("error al inyectar rutas del túnel en la tabla de enrutamiento de Windows: %v, %v", err1, err2)
@@ -280,10 +271,13 @@ func (w *WintunDevice) Close() error {
 		_ = runHidden("route", "delete", "128.0.0.0", "mask", "128.0.0.0", w.tunIP)
 	}
 
-	// 2. Delete proxy bypass route
+	// 2. Delete proxy and subnet bypass routes
 	if w.proxyIP != "" {
 		_ = runHidden("route", "delete", w.proxyIP, "mask", "255.255.255.255")
 	}
+	_ = runHidden("route", "delete", "10.0.0.0", "mask", "255.0.0.0")
+	_ = runHidden("route", "delete", "172.16.0.0", "mask", "255.240.0.0")
+	_ = runHidden("route", "delete", "192.168.0.0", "mask", "255.255.0.0")
 
 	// 3. Terminate tun2socks process
 	if w.tun2socksCmd != nil && w.tun2socksCmd.Process != nil {

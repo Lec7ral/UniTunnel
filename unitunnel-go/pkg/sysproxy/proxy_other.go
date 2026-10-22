@@ -11,3 +11,6 @@ func EnableSystemProxy(httpPort, socksPort int) error {
 func DisableSystemProxy() error {
 	return nil
 }
+
+// EnableUWPStoreExemption fallback on non-Windows
+func EnableUWPStoreExemption() {}

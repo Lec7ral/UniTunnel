@@ -4,6 +4,7 @@ package sysproxy
 
 import (
 	"fmt"
+	"os/exec"
 	"syscall"
 	"golang.org/x/sys/windows/registry"
 )
@@ -50,7 +51,20 @@ func EnableSystemProxy(httpPort, socksPort int) error {
 
 	// Refresh system settings
 	refreshWinINet()
+
+	// Enable UWP AppContainer Loopback Exemption for Microsoft Store
+	EnableUWPStoreExemption()
 	return nil
+}
+
+// EnableUWPStoreExemption exempts Microsoft Store and common Windows UWP apps from AppContainer loopback restrictions
+func EnableUWPStoreExemption() {
+	cmd := exec.Command("CheckNetIsolation.exe", "LoopbackExempt", "-a", "-n=Microsoft.WindowsStore_8wekyb3d8bbwe")
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		HideWindow:    true,
+		CreationFlags: 0x08000000,
+	}
+	_ = cmd.Run()
 }
 
 // DisableSystemProxy turns off Windows system proxy
