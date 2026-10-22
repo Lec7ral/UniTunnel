@@ -54,7 +54,7 @@ func DefaultConfig() *Config {
 		},
 		LocalSocksPort: 1080,
 		LocalHTTPPort:  8081,
-		CaptureMode:    "system_proxy",
+		CaptureMode:    "tun",
 		TunName:        "UniTunnel0",
 		TunIPv4:        "10.254.1.2",
 		TunMask:        "255.255.255.0",

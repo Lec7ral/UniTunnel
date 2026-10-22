@@ -131,9 +131,8 @@ func OpenWintun(cfg *config.Config, onLog func(string)) (*WintunDevice, error) {
 	socksURL := fmt.Sprintf("socks5://127.0.0.1:%d", socksPort)
 
 	cmd := exec.Command(tun2socksPath,
-		"-device", fmt.Sprintf("tun://%s", adapterName),
+		"-device", fmt.Sprintf("wintun://%s", adapterName),
 		"-proxy", socksURL,
-		"-interface", adapterName,
 		"-loglevel", "error",
 	)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
@@ -142,9 +141,9 @@ func OpenWintun(cfg *config.Config, onLog func(string)) (*WintunDevice, error) {
 	}
 
 	if err := cmd.Start(); err != nil {
-		// Fallback without "tun://" syntax in case of different tun2socks version
+		// Fallback with "tun://" syntax in case of alternate tun2socks build
 		cmd = exec.Command(tun2socksPath,
-			"-device", adapterName,
+			"-device", fmt.Sprintf("tun://%s", adapterName),
 			"-proxy", socksURL,
 			"-loglevel", "error",
 		)
@@ -183,16 +182,18 @@ func OpenWintun(cfg *config.Config, onLog func(string)) (*WintunDevice, error) {
 
 	time.Sleep(250 * time.Millisecond)
 
-	// 7. Assign DNS servers on Wintun adapter
+	// 7. Assign DNS servers on Wintun adapter (validate=no prevents netsh from blocking)
 	_ = runHidden("netsh", "interface", "ip", "set", "dns",
 		fmt.Sprintf("name=\"%s\"", adapterName),
 		"static",
 		"1.1.1.1",
+		"validate=no",
 	)
 	_ = runHidden("netsh", "interface", "ip", "add", "dns",
 		fmt.Sprintf("name=\"%s\"", adapterName),
 		"8.8.8.8",
 		"index=2",
+		"validate=no",
 	)
 
 	// 8. Configure System Routing Table
@@ -205,7 +206,13 @@ func OpenWintun(cfg *config.Config, onLog func(string)) (*WintunDevice, error) {
 	// Step B: Direct 0.0.0.0/1 and 128.0.0.0/1 through virtual TUN adapter
 	// (Split default route technique: overrides default 0.0.0.0/0 without deleting physical default gateway)
 	err1 := runHidden("route", "add", "0.0.0.0", "mask", "128.0.0.0", tunIP, "metric", "1")
+	if err1 != nil {
+		err1 = runHidden("netsh", "interface", "ipv4", "add", "route", "0.0.0.0/1", fmt.Sprintf("\"%s\"", adapterName), tunIP, "metric=1")
+	}
 	err2 := runHidden("route", "add", "128.0.0.0", "mask", "128.0.0.0", tunIP, "metric", "1")
+	if err2 != nil {
+		err2 = runHidden("netsh", "interface", "ipv4", "add", "route", "128.0.0.0/1", fmt.Sprintf("\"%s\"", adapterName), tunIP, "metric=1")
+	}
 	if err1 != nil || err2 != nil {
 		return nil, fmt.Errorf("error al inyectar rutas del túnel en la tabla de enrutamiento de Windows: %v, %v", err1, err2)
 	}

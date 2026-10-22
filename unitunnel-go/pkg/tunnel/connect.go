@@ -296,7 +296,7 @@ func (d *Dialer) negotiateConnect(conn net.Conn, targetAddr string, account *con
 		} else if useNTLM {
 			type1 := auth.CreateNegotiateMessage(cleanDomain, "UNITUNNEL-PC")
 			connectReq += fmt.Sprintf("Proxy-Authorization: NTLM %s\r\n", type1)
-			if d.OnLog != nil && !d.inPrecheck {
+			if d.OnLog != nil && d.inPrecheck {
 				d.OnLog(fmt.Sprintf("[AUTH-NTLM] Paso 1: Enviando negociación inicial NTLM (Type-1) hacia %s...", proxyAddr))
 			}
 		}
@@ -336,7 +336,7 @@ func (d *Dialer) negotiateConnect(conn net.Conn, targetAddr string, account *con
 				}
 			}
 
-			if d.OnLog != nil {
+			if d.OnLog != nil && d.inPrecheck {
 				serverDesc := resp1.server
 				if serverDesc == "" {
 					serverDesc = "Squid"
@@ -365,7 +365,7 @@ func (d *Dialer) negotiateConnect(conn net.Conn, targetAddr string, account *con
 			}
 
 			if resp2.statusCode == 200 {
-				if d.OnLog != nil {
+				if d.OnLog != nil && d.inPrecheck {
 					d.OnLog(fmt.Sprintf("✓ [AUTH-EXITO] ¡Autenticación NTLM exitosa! Túnel establecido con %s.", proxyAddr))
 				}
 				return &bufferedConn{Conn: conn, reader: reader}, nil
