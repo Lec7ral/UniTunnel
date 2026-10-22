@@ -16,7 +16,7 @@ type ProbeResult struct {
 // CheckInternetFlow tests actual egress connectivity through the current routing table
 func CheckInternetFlow(targetURL string, timeout time.Duration) ProbeResult {
 	if targetURL == "" {
-		targetURL = "http://www.google.com/generate_204"
+		targetURL = "https://www.google.com/generate_204"
 	}
 
 	client := &http.Client{
@@ -59,7 +59,7 @@ func StartPeriodicPing(ctx context.Context, interval time.Duration, onResult fun
 	// Wait 1.5 seconds after Wintun initialization to let Windows IP routes settle
 	select {
 	case <-time.After(1500 * time.Millisecond):
-		res := CheckInternetFlow("http://www.google.com/generate_204", 4*time.Second)
+		res := CheckInternetFlow("https://www.google.com/generate_204", 4*time.Second)
 		onResult(res)
 	case <-ctx.Done():
 		return
@@ -73,7 +73,7 @@ func StartPeriodicPing(ctx context.Context, interval time.Duration, onResult fun
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			res := CheckInternetFlow("http://www.google.com/generate_204", 4*time.Second)
+			res := CheckInternetFlow("https://www.google.com/generate_204", 4*time.Second)
 			onResult(res)
 		}
 	}

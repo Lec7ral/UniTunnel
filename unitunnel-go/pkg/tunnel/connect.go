@@ -376,13 +376,21 @@ func (d *Dialer) negotiateConnect(conn net.Conn, targetAddr string, account *con
 			if serverDesc == "" {
 				serverDesc = resp1.server
 			}
+			if resp2.statusCode == 403 {
+				// HTTP 403 Forbidden is an institutional proxy ACL restriction (e.g. CONNECT to port 80 blocked, or blocked domain)
+				// It is NOT a credential failure and MUST NOT trip the user account lockout!
+				return nil, fmt.Errorf("destino %s bloqueado por política del proxy (HTTP 403 Forbidden)", targetAddr)
+			}
+
 			errMsg := fmt.Sprintf("autenticación NTLM rechazada por el proxy %s (%s, HTTP %d)",
 				proxyAddr, serverDesc, resp2.statusCode)
 			if resp2.squidError != "" {
 				errMsg += fmt.Sprintf(" · Error Squid: %s", resp2.squidError)
 			}
 			authErr := fmt.Errorf("%s (verifica usuario '%s', dominio '%s' o contraseña)", errMsg, cleanUser, authDomain)
-			d.tripAuthLock(authErr, "Credenciales NTLM rechazadas por el proxy")
+			if d.inPrecheck {
+				d.tripAuthLock(authErr, "Credenciales NTLM rechazadas por el proxy")
+			}
 			return nil, authErr
 		}
 

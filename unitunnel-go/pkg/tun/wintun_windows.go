@@ -123,30 +123,26 @@ func OpenWintun(cfg *config.Config, onLog func(string)) (*WintunDevice, error) {
 		onLog(fmt.Sprintf("→ Iniciando motor VPN L3 (tun2socks) con adaptador '%s'...", adapterName))
 	}
 
-	// 4. Launch tun2socks windowless
-	socksPort := cfg.LocalSocksPort
-	if socksPort == 0 {
-		socksPort = 1080
-	}
-	socksURL := fmt.Sprintf("socks5://127.0.0.1:%d", socksPort)
-
+	// 4. Launch tun2socks windowless with working directory set to application directory
 	cmd := exec.Command(tun2socksPath,
-		"-device", fmt.Sprintf("wintun://%s", adapterName),
+		"-device", fmt.Sprintf("tun://%s", adapterName),
 		"-proxy", socksURL,
 		"-loglevel", "error",
 	)
+	cmd.Dir = exeDir
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		HideWindow:    true,
 		CreationFlags: CREATE_NO_WINDOW,
 	}
 
 	if err := cmd.Start(); err != nil {
-		// Fallback with "tun://" syntax in case of alternate tun2socks build
+		// Fallback with standard "-device wintun" syntax
 		cmd = exec.Command(tun2socksPath,
-			"-device", fmt.Sprintf("tun://%s", adapterName),
+			"-device", "wintun",
 			"-proxy", socksURL,
 			"-loglevel", "error",
 		)
+		cmd.Dir = exeDir
 		cmd.SysProcAttr = &syscall.SysProcAttr{
 			HideWindow:    true,
 			CreationFlags: CREATE_NO_WINDOW,
@@ -158,18 +154,26 @@ func OpenWintun(cfg *config.Config, onLog func(string)) (*WintunDevice, error) {
 	dev.tun2socksCmd = cmd
 
 	// 5. Wait up to 5 seconds for Wintun adapter to appear in Windows NDIS
-	var adapterReady bool
+	var detectedAdapter string
 	for i := 0; i < 25; i++ {
 		time.Sleep(200 * time.Millisecond)
 		if isInterfacePresent(adapterName) {
-			adapterReady = true
+			detectedAdapter = adapterName
+			break
+		}
+		if isInterfacePresent("wintun") {
+			detectedAdapter = "wintun"
 			break
 		}
 	}
 
-	if !adapterReady {
-		return nil, fmt.Errorf("el adaptador Wintun '%s' tardó demasiado en responder o requiere privilegios de Administrador", adapterName)
+	if detectedAdapter == "" {
+		return nil, fmt.Errorf("el adaptador Wintun tardó demasiado en responder o requiere privilegios de Administrador (verifica que wintun.dll esté en %s)", exeDir)
 	}
+
+	adapterName = detectedAdapter
+	dev.Name = detectedAdapter
+	dev.Interface = detectedAdapter
 
 	// 6. Assign static IP address to Wintun adapter
 	_ = runHidden("netsh", "interface", "ip", "set", "address",
