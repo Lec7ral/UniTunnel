@@ -12,6 +12,7 @@ type Engine struct {
 	cfg         *config.Config
 	dialer      *tunnel.Dialer
 	socksSrv    *tunnel.SOCKS5Server
+	httpSrv     *tunnel.HTTPProxyServer
 	wintunDev   *WintunDevice
 	running     bool
 	mu          sync.Mutex
@@ -52,7 +53,11 @@ func (e *Engine) Start() error {
 	}
 
 	// 2. Start local SOCKS5 proxy on 127.0.0.1:1080
-	socksAddr := fmt.Sprintf("127.0.0.1:%d", e.cfg.LocalSocksPort)
+	socksPort := e.cfg.LocalSocksPort
+	if socksPort == 0 {
+		socksPort = 1080
+	}
+	socksAddr := fmt.Sprintf("127.0.0.1:%d", socksPort)
 	e.socksSrv = tunnel.NewSOCKS5Server(socksAddr, e.dialer)
 	e.socksSrv.OnEvent = e.OnLog
 
@@ -64,21 +69,41 @@ func (e *Engine) Start() error {
 		e.OnLog(fmt.Sprintf("✓ SOCKS5 local activo en %s", socksAddr))
 	}
 
-	// 3. If TUN mode is active, initialize Wintun device and routing
+	// 3. Start local HTTP/HTTPS proxy on 127.0.0.1:8081 (used by Windows System Proxy and browsers)
+	httpPort := e.cfg.LocalHTTPPort
+	if httpPort == 0 {
+		httpPort = 8081
+	}
+	httpAddr := fmt.Sprintf("127.0.0.1:%d", httpPort)
+	e.httpSrv = tunnel.NewHTTPProxyServer(httpAddr, e.dialer)
+	e.httpSrv.OnEvent = e.OnLog
+
+	if err := e.httpSrv.Start(); err != nil {
+		e.socksSrv.Stop()
+		return fmt.Errorf("error iniciando Proxy HTTP/HTTPS local: %w", err)
+	}
+
+	if e.OnLog != nil {
+		e.OnLog(fmt.Sprintf("✓ Proxy HTTP/HTTPS local activo en %s", httpAddr))
+	}
+
+	// 4. If TUN mode is active, initialize Wintun device
 	if e.cfg.CaptureMode == "tun" {
 		if e.OnLog != nil {
 			e.OnLog("→ Inicializando adaptador Wintun y configurando rutas IP del sistema...")
 		}
 
-		dev, err := OpenWintun(e.cfg)
+		dev, err := OpenWintun(e.cfg, e.OnLog)
 		if err != nil {
-			e.socksSrv.Stop()
-			return fmt.Errorf("error al abrir Wintun: %w", err)
-		}
-		e.wintunDev = dev
-
-		if e.OnLog != nil {
-			e.OnLog("✓ Adaptador Wintun configurado. Tráfico redirigido al túnel.")
+			if e.OnLog != nil {
+				e.OnLog(fmt.Sprintf("ℹ Aviso VPN L3: %v", err))
+				e.OnLog("→ Redirigiendo tráfico vía Proxy del Sistema Windows para asegurar navegación ininterrumpida.")
+			}
+		} else {
+			e.wintunDev = dev
+			if e.OnLog != nil {
+				e.OnLog("✓ Adaptador Wintun configurado. Tráfico redirigido al túnel.")
+			}
 		}
 	}
 
@@ -100,6 +125,11 @@ func (e *Engine) Stop() {
 		if e.OnLog != nil {
 			e.OnLog("✓ Rutas y adaptador Wintun restaurados.")
 		}
+	}
+
+	if e.httpSrv != nil {
+		e.httpSrv.Stop()
+		e.httpSrv = nil
 	}
 
 	if e.socksSrv != nil {

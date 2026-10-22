@@ -43,6 +43,15 @@ jobs:
           Remove-Item -Recurse -Force "dist\wintun_extracted", "dist\wintun.zip"
           Write-Host "Wintun.dll successfully placed in dist folder."
 
+      - name: Download Tun2Socks L3 VPN Engine (x64)
+        run: |
+          Write-Host "Downloading tun2socks L3 engine..."
+          Invoke-WebRequest -Uri "https://github.com/xjasonlyu/tun2socks/releases/download/v2.5.2/tun2socks-windows-amd64.zip" -OutFile "dist\tun2socks.zip"
+          Expand-Archive -Path "dist\tun2socks.zip" -DestinationPath "dist\tun2socks_extracted" -Force
+          Copy-Item -Path "dist\tun2socks_extracted\tun2socks-windows-amd64.exe" -Destination "dist\tun2socks.exe" -Force
+          Remove-Item -Recurse -Force "dist\tun2socks_extracted", "dist\tun2socks.zip"
+          Write-Host "Tun2socks.exe successfully placed in dist folder."
+
       - name: Build UniTunnel Go Executable (Fyne GUI + Wintun)
         working-directory: ./unitunnel-go
         run: |

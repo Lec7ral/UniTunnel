@@ -502,9 +502,7 @@ func (g *GUI) toggleConnection() {
 	if g.engine != nil && g.engine.IsRunning() {
 		// Stop connection
 		g.engine.Stop()
-		if g.cfg.CaptureMode == "system_proxy" {
-			_ = sysproxy.DisableSystemProxy()
-		}
+		_ = sysproxy.DisableSystemProxy()
 		if g.speedMonitorStop != nil {
 			close(g.speedMonitorStop)
 			g.speedMonitorStop = nil
@@ -566,9 +564,7 @@ func (g *GUI) toggleConnection() {
 			if g.engine != nil && g.engine.IsRunning() {
 				g.engine.Stop()
 			}
-			if g.cfg.CaptureMode == "system_proxy" {
-				_ = sysproxy.DisableSystemProxy()
-			}
+			_ = sysproxy.DisableSystemProxy()
 			g.statusText.Text = "ERROR: SESIÓN CERRADA POR EL PROXY"
 			g.statusText.Color = color.NRGBA{R: 239, G: 68, B: 68, A: 255}
 			g.statusText.Refresh()
@@ -599,10 +595,20 @@ func (g *GUI) toggleConnection() {
 			return
 		}
 
-		// Connected successfully!
-		if g.cfg.CaptureMode == "system_proxy" {
-			_ = sysproxy.EnableSystemProxy(g.cfg.LocalSocksPort)
-			g.AppendLog("[SISTEMA] ✓ Proxy del sistema Windows configurado en 127.0.0.1:1080.")
+		// Connected successfully! Enable Windows System Proxy for all web browsers & apps
+		httpP := g.cfg.LocalHTTPPort
+		if httpP == 0 {
+			httpP = 8081
+		}
+		socksP := g.cfg.LocalSocksPort
+		if socksP == 0 {
+			socksP = 1080
+		}
+		if err := sysproxy.EnableSystemProxy(httpP, socksP); err == nil {
+			g.AppendLog(fmt.Sprintf("[SISTEMA] ✓ Proxy del sistema Windows activado (HTTP: 127.0.0.1:%d · SOCKS5: 127.0.0.1:%d).", httpP, socksP))
+			g.AppendLog("[SISTEMA] ✓ Todo el tráfico de navegadores (Chrome, Edge, Firefox) redirigido automáticamente al túnel.")
+		} else {
+			g.AppendLog(fmt.Sprintf("[SISTEMA] ℹ Configura tu navegador o Telegram hacia 127.0.0.1:%d (HTTP) o 127.0.0.1:%d (SOCKS5).", httpP, socksP))
 		}
 
 		g.statusText.Text = "CONECTADO · VERIFICANDO TRÁFICO..."

@@ -3,7 +3,7 @@
 package sysproxy
 
 // EnableSystemProxy fallback on non-Windows
-func EnableSystemProxy(port int) error {
+func EnableSystemProxy(httpPort, socksPort int) error {
 	return nil
 }
 

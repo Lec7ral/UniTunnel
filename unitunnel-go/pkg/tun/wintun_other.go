@@ -10,7 +10,7 @@ type WintunDevice struct {
 	Name string
 }
 
-func OpenWintun(cfg *config.Config) (*WintunDevice, error) {
+func OpenWintun(cfg *config.Config, onLog func(string)) (*WintunDevice, error) {
 	return &WintunDevice{Name: "stub"}, nil
 }
 

@@ -14,7 +14,7 @@
   ],
   "local_socks_port": 1080,
   "local_http_port": 8081,
-  "capture_mode": "tun",
+  "capture_mode": "system_proxy",
   "tun_name": "UniTunnel0",
   "tun_ipv4": "10.254.1.2",
   "tun_mask": "255.255.255.0",
