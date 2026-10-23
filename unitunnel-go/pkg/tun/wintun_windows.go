@@ -202,10 +202,25 @@ func OpenWintun(cfg *config.Config, onLog func(string)) (*WintunDevice, error) {
 
 	time.Sleep(250 * time.Millisecond)
 
-	// 7. Configure DNS and Subnet Routing:
-	// In institutional proxy environments (like UCI), public DNS (1.1.1.1, 8.8.8.8) cannot be reached via UDP
-	// through the campus firewall. Instead, Windows uses the institutional DNS server from the physical adapter.
-	// We add explicit bypass routes for institutional & private subnets so local DNS queries and intranet work directly.
+	// 7. Configure DNS servers on Wintun adapter pointing to our local DoH resolver
+	_ = runHidden("netsh", "interface", "ip", "set", "dns",
+		fmt.Sprintf("name=\"%s\"", adapterName),
+		"static",
+		"127.0.0.1",
+		"validate=no",
+	)
+	_ = runHidden("netsh", "interface", "ip", "add", "dns",
+		fmt.Sprintf("name=\"%s\"", adapterName),
+		tunIP,
+		"index=2",
+		"validate=no",
+	)
+	// Prioritize Wintun interface over all others for DNS resolution and default routing
+	_ = runHidden("netsh", "interface", "ip", "set", "interface", fmt.Sprintf("name=\"%s\"", adapterName), "metric=1")
+	_ = runHidden("netsh", "interface", "ipv4", "set", "interface", fmt.Sprintf("name=\"%s\"", adapterName), "metric=1")
+	_ = runHidden("ipconfig", "/flushdns")
+
+	// 8. Configure Subnet Routing and bypasses:
 	_ = runHidden("route", "add", cfg.ProxyHost, "mask", "255.255.255.255", gw, "metric", "5")
 	_ = runHidden("route", "add", "10.0.0.0", "mask", "255.0.0.0", gw, "metric", "5")
 	_ = runHidden("route", "add", "172.16.0.0", "mask", "255.240.0.0", gw, "metric", "5")
@@ -301,6 +316,9 @@ func (w *WintunDevice) Close() error {
 	if w.Name != "" {
 		_ = runHidden("netsh", "interface", "ip", "delete", "address", fmt.Sprintf("name=\"%s\"", w.Name), "addr="+w.tunIP)
 	}
+
+	// 5. Clear stale DNS cache
+	_ = runHidden("ipconfig", "/flushdns")
 
 	return nil
 }

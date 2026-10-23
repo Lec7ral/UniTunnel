@@ -99,7 +99,8 @@ export default function App() {
         setConnectionStatus('connected');
         setStatusMessage(`CONECTADO · ${pingMs}ms`);
         addLog(`✓ [AUTH-EXITO] ¡Autenticación NTLM exitosa! Túnel establecido con ${proxyHost}:${proxyPort}.`);
-        addLog(`✓ [SISTEMA] Adaptador Wintun configurado. Tráfico del sistema redirigido al túnel.`);
+        addLog(`✓ [DNS DoH] Servidor RFC 8484 activo en UDP 53. Resolviendo nombres de dominio vía HTTPS.`);
+        addLog(`✓ [SISTEMA] Adaptador Wintun configurado con métrica 1. Todo el tráfico y DNS redirigidos.`);
       }, 1000);
     }, 1200);
   };
@@ -949,6 +950,27 @@ export default function App() {
                   <h4 className="font-semibold text-slate-200">Formato correcto de credenciales</h4>
                   <p className="text-slate-400 mt-1">
                     En el campo de Dominio puedes escribir tanto <code className="text-cyan-300">UCI</code> como <code className="text-cyan-300">uci.cu</code>. El motor UniTunnel ahora normaliza ambos casos al formato NetBIOS adecuado.
+                  </p>
+                </div>
+
+                <div className="p-3 rounded-lg bg-slate-900/90 border border-slate-800">
+                  <h4 className="font-semibold text-slate-200">¿Por qué funcionaba ping a 8.8.8.8 pero no a google.com?</h4>
+                  <p className="text-slate-400 mt-1">
+                    Hacer ping a una IP numérica (<code className="text-cyan-300">8.8.8.8</code>) comprueba que el enrutamiento IP y el adaptador L3 funcionan correctamente. Sin embargo, los nombres (<code className="text-cyan-300">google.com</code>) requieren consultas DNS (puerto UDP 53), que los cortafuegos universitarios bloquean y Squid no puede cursar (Squid solo soporta TCP CONNECT). UniTunnel ahora incorpora un <strong>servidor DNS DoH (RFC 8484)</strong> que intercepta UDP 53 y resuelve nombres vía HTTPS a través de Squid.
+                  </p>
+                </div>
+
+                <div className="p-3 rounded-lg bg-slate-900/90 border border-slate-800">
+                  <h4 className="font-semibold text-slate-200">¿Por qué el adaptador se identifica como &quot;WireGuard&quot; en Windows?</h4>
+                  <p className="text-slate-400 mt-1">
+                    El controlador <code className="text-cyan-300">Wintun</code> fue desarrollado por el autor de WireGuard como el driver TUN NDIS 6 moderno de mayor rendimiento para Windows (reemplazo del antiguo y lento <code className="text-slate-400">tap-windows6</code> de OpenVPN). <strong>Esto no cifra tu tráfico</strong> ni cambia el protocolo: solo actúa como una tarjeta de red virtual ultrarrápida.
+                  </p>
+                </div>
+
+                <div className="p-3 rounded-lg bg-slate-900/90 border border-slate-800">
+                  <h4 className="font-semibold text-slate-200">¿Por qué con OpenVPN salía todo y cómo lo hace UniTunnel sin VPS?</h4>
+                  <p className="text-slate-400 mt-1">
+                    OpenVPN se conectaba a un servidor externo (VPS) fuera de la isla, el cual recibía un túnel TCP 443 y adentro resolvía DNS y enrutaba todo. UniTunnel consigue una experiencia idéntica de <strong>Cero Configuración</strong> directamente contra Squid gracias a su trío automático: Adaptador Wintun L3 + Proxy WinINet de sistema + Servidor DNS DoH local.
                   </p>
                 </div>
 

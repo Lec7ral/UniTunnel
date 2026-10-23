@@ -13,6 +13,7 @@ type Engine struct {
 	dialer      *tunnel.Dialer
 	socksSrv    *tunnel.SOCKS5Server
 	httpSrv     *tunnel.HTTPProxyServer
+	dohSrv      *tunnel.DoHServer
 	wintunDev   *WintunDevice
 	running     bool
 	mu          sync.Mutex
@@ -87,7 +88,19 @@ func (e *Engine) Start() error {
 		e.OnLog(fmt.Sprintf("✓ Proxy HTTP/HTTPS local activo en %s", httpAddr))
 	}
 
-	// 4. If TUN mode is active, initialize Wintun device
+	// 4. Start RFC 8484 DNS-over-HTTPS bridge on UDP port 53
+	// This intercepts UDP DNS lookups from Windows apps and resolves them through Squid (HTTPS 443)
+	e.dohSrv = tunnel.NewDoHServer(e.dialer)
+	e.dohSrv.OnLog = e.OnLog
+	if err := e.dohSrv.Start("0.0.0.0:53"); err != nil {
+		if e.OnLog != nil {
+			e.OnLog(fmt.Sprintf("ℹ Aviso DoH DNS: %v (se utilizará resolución secundaria)", err))
+		}
+	} else if e.OnLog != nil {
+		e.OnLog("✓ Servidor DNS DoH (RFC 8484) activo en UDP 53. Nombres resueltos por HTTPS.")
+	}
+
+	// 5. If TUN mode is active, initialize Wintun device
 	if e.cfg.CaptureMode == "tun" {
 		if e.OnLog != nil {
 			e.OnLog("→ Inicializando adaptador Wintun y configurando rutas IP del sistema...")
@@ -125,6 +138,11 @@ func (e *Engine) Stop() {
 		if e.OnLog != nil {
 			e.OnLog("✓ Rutas y adaptador Wintun restaurados.")
 		}
+	}
+
+	if e.dohSrv != nil {
+		e.dohSrv.Stop()
+		e.dohSrv = nil
 	}
 
 	if e.httpSrv != nil {
