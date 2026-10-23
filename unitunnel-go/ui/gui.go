@@ -24,6 +24,7 @@ import (
 	"unitunnel/pkg/sysproxy"
 	"unitunnel/pkg/traffic"
 	"unitunnel/pkg/tun"
+	"unitunnel/pkg/tunnel"
 )
 
 // GUI represents the native Fyne desktop application.
@@ -385,6 +386,47 @@ func (g *GUI) buildSettingsTab() fyne.CanvasObject {
 		d.Show()
 	})
 
+	auditBtn := widget.NewButtonWithIcon("Auditar Bloqueos 403 (Squid ACL)", theme.WarningIcon(), func() {
+		g.AppendLog("[AUDITORÍA] Verificando reglas ACL y puertos bloqueados en el proxy...")
+		go func() {
+			dialer := tunnel.NewDialer(g.cfg)
+			rep := tunnel.RunProxyAudit(g.cfg, dialer)
+
+			var items []fyne.CanvasObject
+			titleLbl := widget.NewLabelWithStyle("Auditoría de Bloqueos y Políticas de Squid", fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
+			items = append(items, titleLbl, widget.NewSeparator())
+
+			for _, it := range rep.Items {
+				statusPrefix := "✓"
+				if it.HTTPCode == 403 {
+					statusPrefix = "✗"
+				}
+				nameLbl := widget.NewLabelWithStyle(fmt.Sprintf("%s %s: %s", statusPrefix, it.Name, it.Status), fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+				explLbl := widget.NewLabel(fmt.Sprintf("   %s", it.Explanation))
+				explLbl.Wrapping = fyne.TextWrapWord
+				items = append(items, nameLbl, explLbl)
+			}
+
+			items = append(items, widget.NewSeparator())
+			sumTitle := widget.NewLabelWithStyle("Conclusión del Diagnóstico:", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+			sumLbl := widget.NewLabel(rep.Summary)
+			sumLbl.Wrapping = fyne.TextWrapWord
+
+			recTitle := widget.NewLabelWithStyle("Recomendaciones y Alternativas:", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+			recLbl := widget.NewLabel(rep.Recommendation)
+			recLbl.Wrapping = fyne.TextWrapWord
+
+			items = append(items, sumTitle, sumLbl, widget.NewSeparator(), recTitle, recLbl)
+
+			scroll := container.NewVScroll(container.NewVBox(items...))
+			scroll.SetMinSize(fyne.NewSize(420, 340))
+
+			d := dialog.NewCustom("Auditoría de Políticas Squid (HTTP 403)", "Entendido", scroll, g.window)
+			d.Resize(fyne.NewSize(450, 400))
+			d.Show()
+		}()
+	})
+
 	saveBtn := widget.NewButtonWithIcon("Guardar Ajustes", theme.DocumentSaveIcon(), func() {
 		g.cfg.ProxyHost = strings.TrimSpace(g.proxyHostEntry.Text)
 		if p, err := strconv.Atoi(strings.TrimSpace(g.proxyPortEntry.Text)); err == nil {
@@ -414,7 +456,10 @@ func (g *GUI) buildSettingsTab() fyne.CanvasObject {
 	settingsBox := container.NewVBox(
 		widget.NewLabelWithStyle("CONFIGURACIÓN DE RED INSTITUCIONAL", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 		form,
-		container.NewHBox(probeBtn, diagBtn),
+		container.NewVBox(
+			container.NewGridWithColumns(2, probeBtn, diagBtn),
+			auditBtn,
+		),
 		widget.NewSeparator(),
 		widget.NewLabelWithStyle("SALIDA EXTERNA (OPCIONAL)", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 		g.vpsCheck,

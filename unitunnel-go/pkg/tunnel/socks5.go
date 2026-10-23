@@ -7,6 +7,7 @@ import (
 	"net"
 	"strconv"
 	"sync"
+	"time"
 
 	"unitunnel/pkg/traffic"
 )
@@ -142,9 +143,63 @@ func (s *SOCKS5Server) handleClient(conn net.Conn) {
 		return
 	}
 	port := binary.BigEndian.Uint16(portBuf)
+
+	// Step 1: If destination is an IP address, check if we have a recorded domain name in DNSCache
+	if net.ParseIP(host) != nil {
+		if dom := LookupDomainByIP(host); dom != "" {
+			host = dom
+		}
+	}
 	target := net.JoinHostPort(host, strconv.Itoa(int(port)))
 
-	// Dial remote destination via authenticated proxy
+	// Step 2: If port is 443 and host is STILL a numerical IP (e.g. app bypassed local DNS or used raw IP),
+	// peek at the TLS ClientHello to extract SNI (Server Name Indication).
+	// This converts CONNECT 142.251.211.238:443 into CONNECT google.com:443, bypassing Squid's numeric_IPs block!
+	if port == 443 && net.ParseIP(host) != nil {
+		// Acknowledge SOCKS5 connection success to client so client immediately sends TLS ClientHello
+		_, err = conn.Write([]byte{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+		if err != nil {
+			return
+		}
+
+		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		peekBuf := make([]byte, 4096)
+		n, err := conn.Read(peekBuf)
+		_ = conn.SetReadDeadline(time.Time{})
+		if err != nil || n == 0 {
+			return
+		}
+
+		clientData := peekBuf[:n]
+		sni := ExtractSNI(clientData)
+		if sni != "" {
+			target = net.JoinHostPort(sni, strconv.Itoa(int(port)))
+			RecordDNSMapping(host, sni)
+			if s.OnEvent != nil {
+				s.OnEvent(fmt.Sprintf("✓ [SNI Sniff] IP %s traducida a '%s' para evadir bloqueo Squid", host, sni))
+			}
+		}
+
+		remoteConn, err := s.dialer.Dial("tcp", target)
+		if err != nil {
+			locked, _ := s.dialer.IsAuthLocked()
+			if !locked && s.OnEvent != nil {
+				s.OnEvent(fmt.Sprintf("[SOCKS5 Error] Falló conexión a %s: %v", target, err))
+			}
+			return
+		}
+		defer remoteConn.Close()
+
+		// Forward the buffered TLS ClientHello to the remote destination
+		if _, err := remoteConn.Write(clientData); err != nil {
+			return
+		}
+
+		traffic.CountingPipe(conn, remoteConn)
+		return
+	}
+
+	// Step 3: Standard connection (Domain already known, or non-443 port)
 	remoteConn, err := s.dialer.Dial("tcp", target)
 	if err != nil {
 		_, _ = conn.Write([]byte{0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0})

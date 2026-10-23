@@ -58,6 +58,18 @@ export default function App() {
     details: string;
   } | null>(null);
 
+  // Squid ACL 403 Audit state
+  const [auditRunning, setAuditRunning] = useState(false);
+  const [auditDone, setAuditDone] = useState(true);
+
+  const runAclAudit = () => {
+    setAuditRunning(true);
+    setTimeout(() => {
+      setAuditRunning(false);
+      setAuditDone(true);
+    }, 1000);
+  };
+
   // Speed tick simulation when connected
   useEffect(() => {
     if (connectionStatus !== 'connected') return;
@@ -886,6 +898,122 @@ export default function App() {
                   </div>
                 </div>
               )}
+            </div>
+
+            {/* Squid ACL 403 Restrictions Auditor Card */}
+            <div className="bg-slate-900/40 border border-slate-800 rounded-xl p-6 space-y-6">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-800 pb-5">
+                <div>
+                  <h3 className="text-base font-semibold text-slate-100 flex items-center gap-2">
+                    <Shield className="w-4 h-4 text-amber-400" />
+                    Auditor de Bloqueos y Políticas Squid (HTTP 403 Forbidden)
+                  </h3>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    Demostración práctica de por qué el proxy universitario rechaza las conexiones por IP o puertos no-SSL.
+                  </p>
+                </div>
+                <button
+                  disabled={auditRunning}
+                  onClick={runAclAudit}
+                  className="px-4 py-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-xs font-medium flex items-center gap-2 transition disabled:opacity-50"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${auditRunning ? 'animate-spin' : ''}`} />
+                  Re-ejecutar Auditoría ACL
+                </button>
+              </div>
+
+              {/* Audit Results Table */}
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs border border-slate-800 rounded-lg overflow-hidden">
+                  <thead className="bg-slate-950 text-slate-400 font-semibold uppercase text-[10px] tracking-wider border-b border-slate-800">
+                    <tr>
+                      <th className="py-2.5 px-4">Destino de Prueba</th>
+                      <th className="py-2.5 px-3">Tipo</th>
+                      <th className="py-2.5 px-3">Puerto</th>
+                      <th className="py-2.5 px-3">Respuesta Squid</th>
+                      <th className="py-2.5 px-4">Regla ACL de la Universidad</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/60 font-mono">
+                    <tr className="bg-emerald-950/10 hover:bg-emerald-950/20 transition">
+                      <td className="py-2.5 px-4 text-slate-200 font-semibold">www.google.com:443</td>
+                      <td className="py-2.5 px-3 text-cyan-400">Dominio FQDN</td>
+                      <td className="py-2.5 px-3 text-slate-300">443 (HTTPS)</td>
+                      <td className="py-2.5 px-3 text-emerald-400 font-bold">200 OK ✓</td>
+                      <td className="py-2.5 px-4 text-slate-400 font-sans text-xs">Permitido por política estándar de navegación.</td>
+                    </tr>
+                    <tr className="bg-red-950/10 hover:bg-red-950/20 transition">
+                      <td className="py-2.5 px-4 text-slate-200 font-semibold">142.251.211.238:443</td>
+                      <td className="py-2.5 px-3 text-amber-400">IP Numérica (Google)</td>
+                      <td className="py-2.5 px-3 text-slate-300">443 (HTTPS)</td>
+                      <td className="py-2.5 px-3 text-red-400 font-bold">403 Forbidden ✗</td>
+                      <td className="py-2.5 px-4 text-slate-400 font-sans text-xs">
+                        Regla <code className="text-amber-300">acl numeric_IPs</code>: Squid prohíbe conectar a IPs crudas para forzar filtrado de dominios.
+                      </td>
+                    </tr>
+                    <tr className="bg-red-950/10 hover:bg-red-950/20 transition">
+                      <td className="py-2.5 px-4 text-slate-200 font-semibold">149.154.167.92:443</td>
+                      <td className="py-2.5 px-3 text-amber-400">IP Telegram (DC4)</td>
+                      <td className="py-2.5 px-3 text-slate-300">443 (HTTPS)</td>
+                      <td className="py-2.5 px-3 text-red-400 font-bold">403 Forbidden ✗</td>
+                      <td className="py-2.5 px-4 text-slate-400 font-sans text-xs">
+                        Bloqueo por IP numérica y lista negra perimetral de rangos Telegram en la universidad.
+                      </td>
+                    </tr>
+                    <tr className="bg-red-950/10 hover:bg-red-950/20 transition">
+                      <td className="py-2.5 px-4 text-slate-200 font-semibold">149.154.167.92:80</td>
+                      <td className="py-2.5 px-3 text-amber-400">IP Telegram (DC4)</td>
+                      <td className="py-2.5 px-3 text-slate-300">80 (HTTP)</td>
+                      <td className="py-2.5 px-3 text-red-400 font-bold">403 Forbidden ✗</td>
+                      <td className="py-2.5 px-4 text-slate-400 font-sans text-xs">
+                        Regla <code className="text-red-300">http_access deny CONNECT !SSL_ports</code>: Squid solo permite CONNECT al puerto 443.
+                      </td>
+                    </tr>
+                    <tr className="bg-red-950/10 hover:bg-red-950/20 transition">
+                      <td className="py-2.5 px-4 text-slate-200 font-semibold">85.208.126.162:7551</td>
+                      <td className="py-2.5 px-3 text-amber-400">IP MTProto Telegram</td>
+                      <td className="py-2.5 px-3 text-slate-300">7551 (Custom)</td>
+                      <td className="py-2.5 px-3 text-red-400 font-bold">403 Forbidden ✗</td>
+                      <td className="py-2.5 px-4 text-slate-400 font-sans text-xs">
+                        Puerto no convencional rechazado de inmediato por el cortafuegos.
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Solutions & Alternatives Grid */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2">
+                <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 space-y-2">
+                  <div className="flex items-center gap-2 text-cyan-400 font-semibold text-xs">
+                    <Zap className="w-4 h-4" />
+                    1. Sniffer SNI TLS (Integrado)
+                  </div>
+                  <p className="text-xs text-slate-300 leading-relaxed">
+                    Para todas las conexiones en puerto 443, UniTunnel ahora inspecciona en memoria el paquete <code className="text-cyan-300">ClientHello</code> y extrae el nombre real del dominio (SNI). Así entrega a Squid <code className="text-emerald-400">google.com:443</code> en vez de la IP, sorteando el bloqueo 403.
+                  </p>
+                </div>
+
+                <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 space-y-2">
+                  <div className="flex items-center gap-2 text-amber-400 font-semibold text-xs">
+                    <Settings className="w-4 h-4" />
+                    2. Telegram sin Modificaciones Complejas
+                  </div>
+                  <p className="text-xs text-slate-300 leading-relaxed">
+                    En Telegram Desktop: <strong>Ajustes &gt; Avanzado &gt; Tipo de conexión &gt; Usar proxy HTTP personalizado</strong>. Escribe <code className="text-amber-300">127.0.0.1</code> y puerto <code className="text-amber-300">8081</code> (sin usuario ni contraseña). UniTunnel se encarga del resto.
+                  </p>
+                </div>
+
+                <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 space-y-2">
+                  <div className="flex items-center gap-2 text-emerald-400 font-semibold text-xs">
+                    <Server className="w-4 h-4" />
+                    3. Alternativa OpenVPN (Modo VPS)
+                  </div>
+                  <p className="text-xs text-slate-300 leading-relaxed">
+                    <strong>¿Por qué OpenVPN salía con todo?</strong> Porque abría <em>un único túnel</em> hacia un VPS externo en el puerto 443. Si posees un VPS (o túnel SSH/VLESS), activa la casilla &quot;Habilitar VPS&quot; en Ajustes de UniTunnel para tener esa misma salida universal sin restricciones.
+                  </p>
+                </div>
+              </div>
             </div>
           </div>
         )}

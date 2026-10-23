@@ -116,6 +116,9 @@ func (s *DoHServer) handleQuery(query []byte, clientAddr net.Addr) {
 		return
 	}
 
+	// Register IP -> Domain mapping in cache so TCP connections to these IPs know their real domain
+	ParseAndRecordDNSResponse(reply)
+
 	s.mu.Lock()
 	if s.running && s.conn != nil {
 		_, _ = s.conn.WriteTo(reply, clientAddr)
