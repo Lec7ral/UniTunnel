@@ -47,6 +47,7 @@ type WintunDevice struct {
 	defaultGateway   string
 	proxyIP          string
 	tunIP            string
+	tunGw            string
 	routesConfigured bool
 	closed           bool
 	mu               sync.Mutex
@@ -57,8 +58,11 @@ func CleanStaleRoutes(proxyHost, tunIP string) {
 	if tunIP == "" {
 		tunIP = "10.254.1.2"
 	}
+	tunGw := "10.254.1.1"
 	_ = runHidden("route", "delete", "0.0.0.0", "mask", "128.0.0.0", tunIP)
+	_ = runHidden("route", "delete", "0.0.0.0", "mask", "128.0.0.0", tunGw)
 	_ = runHidden("route", "delete", "128.0.0.0", "mask", "128.0.0.0", tunIP)
+	_ = runHidden("route", "delete", "128.0.0.0", "mask", "128.0.0.0", tunGw)
 	if proxyHost != "" {
 		_ = runHidden("route", "delete", proxyHost, "mask", "255.255.255.255")
 	}
@@ -183,14 +187,17 @@ func OpenWintun(cfg *config.Config, onLog func(string)) (*WintunDevice, error) {
 	adapterName = detectedAdapter
 	dev.Name = detectedAdapter
 	dev.Interface = detectedAdapter
+	tunGw := "10.254.1.1"
+	dev.tunGw = tunGw
 
-	// 6. Assign static IP address to Wintun adapter
+	// 6. Assign static IP address and virtual gateway to Wintun adapter
 	_ = runHidden("netsh", "interface", "ip", "set", "address",
 		fmt.Sprintf("name=\"%s\"", adapterName),
 		"static",
 		tunIP,
 		tunMask,
-		"none",
+		tunGw,
+		"1",
 	)
 
 	time.Sleep(250 * time.Millisecond)
@@ -204,15 +211,15 @@ func OpenWintun(cfg *config.Config, onLog func(string)) (*WintunDevice, error) {
 	_ = runHidden("route", "add", "172.16.0.0", "mask", "255.240.0.0", gw, "metric", "5")
 	_ = runHidden("route", "add", "192.168.0.0", "mask", "255.255.0.0", gw, "metric", "5")
 
-	// 8. Direct all public internet traffic (0.0.0.0/1 and 128.0.0.0/1) through virtual TUN adapter
+	// 8. Direct all public internet traffic (0.0.0.0/1 and 128.0.0.0/1) through virtual TUN gateway
 	// (Split default route technique: overrides default 0.0.0.0/0 without deleting physical default gateway)
-	err1 := runHidden("route", "add", "0.0.0.0", "mask", "128.0.0.0", tunIP, "metric", "1")
+	err1 := runHidden("route", "add", "0.0.0.0", "mask", "128.0.0.0", tunGw, "metric", "1")
 	if err1 != nil {
-		err1 = runHidden("netsh", "interface", "ipv4", "add", "route", "0.0.0.0/1", adapterName, tunIP, "metric=1")
+		err1 = runHidden("netsh", "interface", "ipv4", "add", "route", "0.0.0.0/1", adapterName, tunGw, "metric=1")
 	}
-	err2 := runHidden("route", "add", "128.0.0.0", "mask", "128.0.0.0", tunIP, "metric", "1")
+	err2 := runHidden("route", "add", "128.0.0.0", "mask", "128.0.0.0", tunGw, "metric", "1")
 	if err2 != nil {
-		err2 = runHidden("netsh", "interface", "ipv4", "add", "route", "128.0.0.0/1", adapterName, tunIP, "metric=1")
+		err2 = runHidden("netsh", "interface", "ipv4", "add", "route", "128.0.0.0/1", adapterName, tunGw, "metric=1")
 	}
 	if err1 != nil || err2 != nil {
 		return nil, fmt.Errorf("error al inyectar rutas del túnel en la tabla de enrutamiento de Windows: %v, %v", err1, err2)
@@ -266,6 +273,10 @@ func (w *WintunDevice) Close() error {
 	w.closed = true
 
 	// 1. Delete split tunnel routes
+	if w.tunGw != "" {
+		_ = runHidden("route", "delete", "0.0.0.0", "mask", "128.0.0.0", w.tunGw)
+		_ = runHidden("route", "delete", "128.0.0.0", "mask", "128.0.0.0", w.tunGw)
+	}
 	if w.tunIP != "" {
 		_ = runHidden("route", "delete", "0.0.0.0", "mask", "128.0.0.0", w.tunIP)
 		_ = runHidden("route", "delete", "128.0.0.0", "mask", "128.0.0.0", w.tunIP)

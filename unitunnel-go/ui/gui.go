@@ -112,6 +112,11 @@ func (g *GUI) Setup() {
 
 	g.AppendLog("[SISTEMA] UniTunnel iniciado con privilegios de Administrador.")
 	g.AppendLog(fmt.Sprintf("[CONFIG] Proxy configurado: %s:%d (%s)", g.cfg.ProxyHost, g.cfg.ProxyPort, g.cfg.AuthType))
+
+	// Run startup diagnostic and auto-clean of any stale routes or processes
+	go tun.PerformStartupDiagnosticsAndClean(g.cfg, func(msg string) {
+		g.AppendLog(msg)
+	})
 }
 
 func (g *GUI) getProxySummaryText() string {
@@ -210,15 +215,23 @@ func (g *GUI) buildSettingsTab() fyne.CanvasObject {
 	g.vpsHostEntry.SetText(g.cfg.VPSServer)
 	g.vpsHostEntry.SetPlaceHolder("vps.midominio.com:443")
 
-	probeBtn := widget.NewButtonWithIcon("Sondear Proxy (Detectar Esquema)", theme.SearchIcon(), func() {
+	probeBtn := widget.NewButtonWithIcon("Sondear Proxy (Detectar Esquema y Auditar)", theme.SearchIcon(), func() {
 		host := strings.TrimSpace(g.proxyHostEntry.Text)
 		portStr := strings.TrimSpace(g.proxyPortEntry.Text)
 		addr := fmt.Sprintf("%s:%s", host, portStr)
-		g.AppendLog(fmt.Sprintf("[SONDA] Conectando con %s para detectar esquema...", addr))
+		g.AppendLog(fmt.Sprintf("[SONDA] Conectando con %s para detectar esquema y verificar credenciales...", addr))
 
 		go func() {
 			p, _ := strconv.Atoi(portStr)
-			res, err := auth.ProbeProxy(fmt.Sprintf("%s:%d", host, p), 5*time.Second)
+			acc := g.cfg.GetActiveAccount()
+			u, dom, pass := "", "", ""
+			if acc != nil {
+				u = acc.Username
+				dom = acc.Domain
+				pass = acc.Password
+			}
+
+			res, err := auth.ProbeProxyWithAuth(fmt.Sprintf("%s:%d", host, p), u, dom, pass, 6*time.Second)
 			if err != nil {
 				g.AppendLog(fmt.Sprintf("[SONDA ERROR] Falló sonda a %s: %v", addr, err))
 				dialog.ShowError(err, g.window)
@@ -226,21 +239,47 @@ func (g *GUI) buildSettingsTab() fyne.CanvasObject {
 			}
 
 			// Clean, formatted custom dialog
-			titleLbl := widget.NewLabelWithStyle("Resultado de Sonda del Proxy", fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
-			serverLbl := widget.NewLabel(fmt.Sprintf("• Servidor: %s", res.ProxyServer))
+			titleLbl := widget.NewLabelWithStyle("Diagnóstico Completo del Proxy y Dominio", fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
+			serverLbl := widget.NewLabel(fmt.Sprintf("• Servidor: %s (Latencia: %dms)", res.ProxyServer, res.Latency.Milliseconds()))
 			if res.ProxyVia != "" {
-				serverLbl.SetText(fmt.Sprintf("• Servidor: %s (Via: %s)", res.ProxyServer, res.ProxyVia))
+				serverLbl.SetText(fmt.Sprintf("• Servidor: %s [Via: %s] (Latencia: %dms)", res.ProxyServer, res.ProxyVia, res.Latency.Milliseconds()))
 			}
 
-			authLbl := widget.NewLabelWithStyle(fmt.Sprintf("• Esquema: %s", strings.ToUpper(string(res.PrimaryType))), fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
-			diagLbl := widget.NewLabel(fmt.Sprintf("• Diagnóstico: %s", res.Diagnostic))
-			diagLbl.Wrapping = fyne.TextWrapWord
+			authLbl := widget.NewLabelWithStyle(fmt.Sprintf("• Esquema Proxy: %s", strings.ToUpper(string(res.PrimaryType))), fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
 
 			var bodyItems []fyne.CanvasObject
-			bodyItems = append(bodyItems, titleLbl, widget.NewSeparator(), serverLbl, authLbl, diagLbl)
+			bodyItems = append(bodyItems, titleLbl, widget.NewSeparator(), serverLbl, authLbl)
+
+			// Active Directory / Domain Details
+			if res.TargetNetBIOS != "" || res.TargetDNSDomain != "" {
+				adTitle := widget.NewLabelWithStyle("Datos de Active Directory / Dominio:", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+				bodyItems = append(bodyItems, widget.NewSeparator(), adTitle)
+				if res.TargetNetBIOS != "" {
+					bodyItems = append(bodyItems, widget.NewLabel(fmt.Sprintf("  • Dominio NetBIOS: %s", res.TargetNetBIOS)))
+				}
+				if res.TargetDNSDomain != "" {
+					bodyItems = append(bodyItems, widget.NewLabel(fmt.Sprintf("  • Dominio DNS (FQDN): %s", res.TargetDNSDomain)))
+				}
+				if res.TargetServerName != "" {
+					bodyItems = append(bodyItems, widget.NewLabel(fmt.Sprintf("  • Servidor Dominio: %s", res.TargetServerName)))
+				}
+			}
+
+			// Credentials audit
+			if res.AuthTested {
+				bodyItems = append(bodyItems, widget.NewSeparator())
+				authHeader := widget.NewLabelWithStyle("Auditoría de Credenciales:", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+				statusLbl := widget.NewLabel(res.AuthStatusText)
+				statusLbl.Wrapping = fyne.TextWrapWord
+				bodyItems = append(bodyItems, authHeader, statusLbl)
+			}
+
+			diagLbl := widget.NewLabel(fmt.Sprintf("• Diagnóstico: %s", res.Diagnostic))
+			diagLbl.Wrapping = fyne.TextWrapWord
+			bodyItems = append(bodyItems, widget.NewSeparator(), diagLbl)
 
 			if len(res.RelevantHeaders) > 0 {
-				hdrTitle := widget.NewLabelWithStyle("Cabeceras Relevantes:", fyne.TextAlignLeading, fyne.TextStyle{Italic: true})
+				hdrTitle := widget.NewLabelWithStyle("Cabeceras del Servidor:", fyne.TextAlignLeading, fyne.TextStyle{Italic: true})
 				bodyItems = append(bodyItems, widget.NewSeparator(), hdrTitle)
 				for _, h := range res.RelevantHeaders {
 					l := widget.NewLabel("  " + h)
@@ -251,10 +290,10 @@ func (g *GUI) buildSettingsTab() fyne.CanvasObject {
 			}
 
 			scrollContent := container.NewVScroll(container.NewVBox(bodyItems...))
-			scrollContent.SetMinSize(fyne.NewSize(350, 240))
+			scrollContent.SetMinSize(fyne.NewSize(380, 280))
 
-			d := dialog.NewCustom("Sonda de Proxy", "Aceptar", scrollContent, g.window)
-			d.Resize(fyne.NewSize(380, 310))
+			d := dialog.NewCustom("Sonda de Proxy y Dominio", "Aceptar", scrollContent, g.window)
+			d.Resize(fyne.NewSize(420, 360))
 			d.Show()
 
 			if res.PrimaryType == auth.AuthTypeNTLM {
@@ -264,7 +303,86 @@ func (g *GUI) buildSettingsTab() fyne.CanvasObject {
 				g.authTypeSelect.SetSelected("basic")
 				g.AppendLog(fmt.Sprintf("[SONDA] Autenticación Basic detectada en %s.", res.ProxyServer))
 			}
+			if res.AuthTested {
+				g.AppendLog(fmt.Sprintf("[SONDA AUDITORÍA] %s", res.AuthStatusText))
+			}
 		}()
+	})
+
+	diagBtn := widget.NewButtonWithIcon("Diagnosticar Red y Wintun", theme.InfoIcon(), func() {
+		rep := tun.InspectNetworkState(g.cfg)
+
+		titleLbl := widget.NewLabelWithStyle("Diagnóstico de Red y Adaptador Wintun", fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
+
+		// Wintun driver & binary
+		wintunStatus := "✓ Presente en la carpeta"
+		if !rep.WintunDLLFound {
+			wintunStatus = "✗ No encontrado (falta wintun.dll)"
+		}
+		tun2socksStatus := "✓ Presente en la carpeta"
+		if !rep.Tun2socksFound {
+			tun2socksStatus = "✗ No encontrado (falta tun2socks.exe)"
+		}
+		driverBox := widget.NewLabel(fmt.Sprintf("• Driver Wintun (wintun.dll): %s\n• Motor L3 (tun2socks.exe): %s", wintunStatus, tun2socksStatus))
+
+		// Virtual adapter
+		adapterDesc := "• Adaptador Virtual: No inicializado aún (inicia al pulsar CONECTAR)"
+		if rep.AdapterPresent {
+			adapterDesc = fmt.Sprintf("• Adaptador Virtual '%s': Activo en Windows\n  - IP Asignada: %s\n  - Puerta de Enlace Virtual: %s",
+				rep.AdapterName, rep.AdapterIPv4, rep.AdapterGateway)
+		}
+		adapterLbl := widget.NewLabel(adapterDesc)
+
+		// Routing & Gateway
+		gwStatus := fmt.Sprintf("• Puerta de enlace física de Windows: %s", rep.PhysicalGateway)
+		routeDesc := "• Rutas del Túnel (0.0.0.0/1 y 128.0.0.0/1): Inactivas (estado de reposo)"
+		if rep.TunnelRoutesActive {
+			routeDesc = "• Rutas del Túnel: ✓ ACTIVAS (Todo el tráfico IP dirigido al túnel)"
+		} else if rep.StaleRoutesDetected {
+			routeDesc = "• Rutas del Túnel: ⚠ Rutas huérfanas detectadas en Windows"
+		}
+		routingLbl := widget.NewLabel(fmt.Sprintf("%s\n%s", gwStatus, routeDesc))
+
+		// Proxy state
+		proxyDesc := "• Proxy del Sistema (WinINet): Inactivo"
+		if rep.SystemProxyEnabled {
+			proxyDesc = fmt.Sprintf("• Proxy del Sistema (WinINet): ✓ Activo (%s)", rep.SystemProxyServer)
+		}
+		if rep.ConsoleEnvActive {
+			proxyDesc += "\n• Variables de Consola (HTTP_PROXY): ✓ Configuradas automáticamente"
+		}
+		proxyLbl := widget.NewLabel(proxyDesc)
+
+		overallLbl := widget.NewLabelWithStyle(rep.OverallStatus, fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+
+		var diagItems []fyne.CanvasObject
+		diagItems = append(diagItems, titleLbl, widget.NewSeparator(),
+			driverBox, widget.NewSeparator(),
+			adapterLbl, widget.NewSeparator(),
+			routingLbl, widget.NewSeparator(),
+			proxyLbl, widget.NewSeparator(),
+			overallLbl,
+		)
+
+		var d dialog.Dialog
+		repairBtn := widget.NewButtonWithIcon("Limpiar / Reparar Conflictos de Red", theme.DeleteIcon(), func() {
+			_ = tun.RepairNetworkState(g.cfg)
+			g.AppendLog("[REPARACIÓN] ✓ Rutas huérfanas, procesos tun2socks y proxies del sistema limpiados con éxito.")
+			if d != nil {
+				d.Hide()
+			}
+			dialog.ShowInformation("Red Reparada", "Configuración de red de Windows limpiada y restaurada a estado original.", g.window)
+		})
+		repairBtn.Importance = widget.WarningImportance
+
+		diagItems = append(diagItems, widget.NewSeparator(), container.NewCenter(repairBtn))
+
+		scroll := container.NewVScroll(container.NewVBox(diagItems...))
+		scroll.SetMinSize(fyne.NewSize(420, 360))
+
+		d = dialog.NewCustom("Diagnóstico de Wintun y Red", "Cerrar", scroll, g.window)
+		d.Resize(fyne.NewSize(450, 420))
+		d.Show()
 	})
 
 	saveBtn := widget.NewButtonWithIcon("Guardar Ajustes", theme.DocumentSaveIcon(), func() {
@@ -296,7 +414,7 @@ func (g *GUI) buildSettingsTab() fyne.CanvasObject {
 	settingsBox := container.NewVBox(
 		widget.NewLabelWithStyle("CONFIGURACIÓN DE RED INSTITUCIONAL", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 		form,
-		container.NewHBox(probeBtn),
+		container.NewHBox(probeBtn, diagBtn),
 		widget.NewSeparator(),
 		widget.NewLabelWithStyle("SALIDA EXTERNA (OPCIONAL)", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 		g.vpsCheck,

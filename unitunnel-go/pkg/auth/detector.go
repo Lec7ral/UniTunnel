@@ -25,24 +25,46 @@ type ProbeResult struct {
 	SquidError        string
 	Diagnostic        string
 	RelevantHeaders   []string
+
+	// Authenticated probe data
+	AuthTested       bool
+	AuthSuccess      bool
+	AuthStatusText   string
+	TargetNetBIOS    string
+	TargetDNSDomain  string
+	TargetServerName string
+	Latency          time.Duration
 }
 
 // ProbeProxy checks what authentication schemes the upstream proxy requires
 func ProbeProxy(proxyAddr string, timeout time.Duration) (*ProbeResult, error) {
+	return ProbeProxyWithAuth(proxyAddr, "", "", "", timeout)
+}
+
+// ProbeProxyWithAuth probes the proxy and verifies credentials, extracting Active Directory domain info
+func ProbeProxyWithAuth(proxyAddr, username, domain, password string, timeout time.Duration) (*ProbeResult, error) {
+	start := time.Now()
 	conn, err := net.DialTimeout("tcp", proxyAddr, timeout)
 	if err != nil {
 		return nil, fmt.Errorf("no se pudo conectar con el proxy en %s: %w", proxyAddr, err)
 	}
 	defer conn.Close()
 
-	// Send an unauthenticated HTTP CONNECT probe to a standard target
+	latency := time.Since(start)
+
+	cleanDomain, cleanUser := SplitDomainUser(domain, username)
 	req := "CONNECT www.google.com:443 HTTP/1.1\r\n" +
 		"Host: www.google.com:443\r\n" +
-		"User-Agent: UniTunnel/1.0\r\n" +
-		"Proxy-Connection: keep-alive\r\n\r\n"
+		"User-Agent: UniTunnel/2.5\r\n" +
+		"Proxy-Connection: keep-alive\r\n"
 
-	_, err = conn.Write([]byte(req))
-	if err != nil {
+	if cleanUser != "" {
+		type1 := CreateNegotiateMessage(cleanDomain, "UNITUNNEL-PC")
+		req += fmt.Sprintf("Proxy-Authorization: NTLM %s\r\n", type1)
+	}
+	req += "\r\n"
+
+	if _, err := conn.Write([]byte(req)); err != nil {
 		return nil, fmt.Errorf("error enviando sonda al proxy: %w", err)
 	}
 
@@ -57,17 +79,20 @@ func ProbeProxy(proxyAddr string, timeout time.Duration) (*ProbeResult, error) {
 		PrimaryType:     AuthTypeNone,
 		ProxyServer:     "Desconocido",
 		RelevantHeaders: make([]string, 0),
+		Latency:         latency,
 	}
 
-	// If proxy returns 200 OK directly, no authentication is needed
 	if strings.Contains(statusLine, "200") {
 		result.SupportedTypes = append(result.SupportedTypes, AuthTypeNone)
 		result.PrimaryType = AuthTypeNone
 		result.Diagnostic = "El proxy permite conexiones directas sin autenticación (IP autorizada)."
+		result.AuthTested = true
+		result.AuthSuccess = true
+		result.AuthStatusText = "Conexión directa autorizada (sin requerimiento de credenciales)."
 		return result, nil
 	}
 
-	// Parse headers to look for Proxy-Authenticate, Server, Via, X-Squid-Error
+	var ntlmChallenge string
 	for {
 		line, err := reader.ReadString('\n')
 		if err != nil || line == "\r\n" || line == "\n" {
@@ -76,7 +101,6 @@ func ProbeProxy(proxyAddr string, timeout time.Duration) (*ProbeResult, error) {
 		trimmed := strings.TrimSpace(line)
 		lower := strings.ToLower(trimmed)
 
-		// Filter out noise (Date, Mime-Version, Content-Type, Content-Length)
 		if strings.HasPrefix(lower, "date:") ||
 			strings.HasPrefix(lower, "mime-version:") ||
 			strings.HasPrefix(lower, "content-type:") ||
@@ -89,8 +113,12 @@ func ProbeProxy(proxyAddr string, timeout time.Duration) (*ProbeResult, error) {
 			val := strings.TrimSpace(trimmed[len("proxy-authenticate:"):])
 			valLower := strings.ToLower(val)
 
-			if strings.Contains(valLower, "ntlm") {
+			if strings.HasPrefix(valLower, "ntlm") {
 				result.SupportedTypes = append(result.SupportedTypes, AuthTypeNTLM)
+				parts := strings.Fields(val)
+				if len(parts) >= 2 {
+					ntlmChallenge = parts[1]
+				}
 			}
 			if strings.Contains(valLower, "basic") {
 				result.SupportedTypes = append(result.SupportedTypes, AuthTypeBasic)
@@ -113,7 +141,6 @@ func ProbeProxy(proxyAddr string, timeout time.Duration) (*ProbeResult, error) {
 		}
 	}
 
-	// Determine primary authentication type
 	hasNTLM := false
 	hasBasic := false
 	for _, t := range result.SupportedTypes {
@@ -134,9 +161,77 @@ func ProbeProxy(proxyAddr string, timeout time.Duration) (*ProbeResult, error) {
 	} else if len(result.SupportedTypes) > 0 {
 		result.PrimaryType = result.SupportedTypes[0]
 		result.Diagnostic = fmt.Sprintf("El proxy requiere autenticación tipo %s.", result.PrimaryType)
-	} else {
-		result.PrimaryType = AuthTypeBasic
-		result.Diagnostic = "El proxy requiere autenticación (código HTTP 407 detectado)."
+	}
+
+	// Parse NTLM challenge if available
+	if ntlmChallenge != "" {
+		chDetails, err := ParseChallengeMessage(ntlmChallenge)
+		if err == nil {
+			result.TargetNetBIOS = chDetails.TargetName
+			if len(chDetails.TargetInfo) > 0 {
+				nbComp := ExtractAvPair(chDetails.TargetInfo, 0x0001)
+				if len(nbComp) > 0 {
+					result.TargetServerName = strings.TrimRight(fromUnicode(nbComp), "\x00")
+				}
+				dnsDom := ExtractAvPair(chDetails.TargetInfo, 0x0004)
+				if len(dnsDom) > 0 {
+					result.TargetDNSDomain = strings.TrimRight(fromUnicode(dnsDom), "\x00")
+				}
+			}
+
+			// If credentials provided, execute Type-3 handshake test
+			if cleanUser != "" && password != "" {
+				result.AuthTested = true
+				authDomain := cleanDomain
+				if result.TargetNetBIOS != "" {
+					if authDomain == "" || strings.EqualFold(authDomain, result.TargetNetBIOS) || strings.EqualFold(authDomain, result.TargetDNSDomain) {
+						authDomain = result.TargetNetBIOS
+					}
+				}
+
+				type3 := CreateAuthenticateMessage(authDomain, cleanUser, password, "UNITUNNEL-PC", chDetails.ServerChallenge, chDetails.TargetInfo)
+				type3Req := fmt.Sprintf("CONNECT www.google.com:443 HTTP/1.1\r\n"+
+					"Host: www.google.com:443\r\n"+
+					"User-Agent: UniTunnel/2.5\r\n"+
+					"Proxy-Connection: keep-alive\r\n"+
+					"Proxy-Authorization: NTLM %s\r\n\r\n", type3)
+
+				if _, err := conn.Write([]byte(type3Req)); err == nil {
+					respLine, err := reader.ReadString('\n')
+					if err == nil {
+						if strings.Contains(respLine, "200") {
+							result.AuthSuccess = true
+							result.AuthStatusText = fmt.Sprintf("✓ Credenciales VÁLIDAS. Usuario '%s' autenticado correctamente (Dominio: '%s').", cleanUser, authDomain)
+						} else if strings.Contains(respLine, "407") {
+							result.AuthSuccess = false
+							result.AuthStatusText = fmt.Sprintf("✗ Credenciales RECHAZADAS por el proxy (Squid rechazó al usuario '%s').", cleanUser)
+						} else {
+							result.AuthStatusText = fmt.Sprintf("ℹ Respuesta del servidor: %s", strings.TrimSpace(respLine))
+						}
+					}
+				}
+			}
+		}
+	} else if hasBasic && cleanUser != "" && password != "" {
+		result.AuthTested = true
+		cred := base64.StdEncoding.EncodeToString([]byte(cleanUser + ":" + password))
+		basicReq := fmt.Sprintf("CONNECT www.google.com:443 HTTP/1.1\r\n"+
+			"Host: www.google.com:443\r\n"+
+			"User-Agent: UniTunnel/2.5\r\n"+
+			"Proxy-Connection: keep-alive\r\n"+
+			"Proxy-Authorization: Basic %s\r\n\r\n", cred)
+		if _, err := conn.Write([]byte(basicReq)); err == nil {
+			respLine, err := reader.ReadString('\n')
+			if err == nil {
+				if strings.Contains(respLine, "200") {
+					result.AuthSuccess = true
+					result.AuthStatusText = fmt.Sprintf("✓ Credenciales Basic VÁLIDAS para el usuario '%s'.", cleanUser)
+				} else {
+					result.AuthSuccess = false
+					result.AuthStatusText = "✗ Credenciales Basic RECHAZADAS (HTTP 407)."
+				}
+			}
+		}
 	}
 
 	return result, nil

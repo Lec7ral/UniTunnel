@@ -14,3 +14,9 @@ func DisableSystemProxy() error {
 
 // EnableUWPStoreExemption fallback on non-Windows
 func EnableUWPStoreExemption() {}
+
+// SetConsoleEnvironmentProxies fallback on non-Windows
+func SetConsoleEnvironmentProxies(httpPort, socksPort int) {}
+
+// RemoveConsoleEnvironmentProxies fallback on non-Windows
+func RemoveConsoleEnvironmentProxies() {}
