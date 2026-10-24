@@ -21,6 +21,7 @@ import (
 	"unitunnel/assets"
 	"unitunnel/pkg/auth"
 	"unitunnel/pkg/config"
+	"unitunnel/pkg/quota"
 	"unitunnel/pkg/sysproxy"
 	"unitunnel/pkg/traffic"
 	"unitunnel/pkg/tun"
@@ -46,6 +47,12 @@ type GUI struct {
 	chart            *RealtimeChart
 	speedMonitorStop chan struct{}
 	mu               sync.Mutex
+
+	// Quota widgets
+	quotaProgressBar *widget.ProgressBar
+	quotaStatusLabel *widget.Label
+	quotaRefreshBtn  *widget.Button
+	quotaPortalEntry *widget.Entry
 
 	// Settings fields
 	proxyHostEntry    *widget.Entry
@@ -163,11 +170,14 @@ func (g *GUI) buildConnectionTab() fyne.CanvasObject {
 	)
 
 	accountCard := g.setupAccountSection()
+	quotaCard := g.setupQuotaSection()
 
 	middleContent := container.NewVBox(
 		connectCard,
 		widget.NewSeparator(),
 		accountCard,
+		widget.NewSeparator(),
+		quotaCard,
 	)
 
 	g.chart = NewRealtimeChart(360, 50)
@@ -215,6 +225,14 @@ func (g *GUI) buildSettingsTab() fyne.CanvasObject {
 	g.vpsHostEntry = widget.NewEntry()
 	g.vpsHostEntry.SetText(g.cfg.VPSServer)
 	g.vpsHostEntry.SetPlaceHolder("vps.midominio.com:443")
+
+	g.quotaPortalEntry = widget.NewEntry()
+	portal := g.cfg.QuotaURL
+	if portal == "" {
+		portal = "https://cuota.uci.cu/"
+	}
+	g.quotaPortalEntry.SetText(portal)
+	g.quotaPortalEntry.SetPlaceHolder("https://cuota.uci.cu/")
 
 	probeBtn := widget.NewButtonWithIcon("Sondear Proxy (Detectar Esquema y Auditar)", theme.SearchIcon(), func() {
 		host := strings.TrimSpace(g.proxyHostEntry.Text)
@@ -435,6 +453,7 @@ func (g *GUI) buildSettingsTab() fyne.CanvasObject {
 		g.cfg.AuthType = g.authTypeSelect.Selected
 		g.cfg.CaptureMode = g.captureModeSelect.Selected
 		g.cfg.VPSServer = strings.TrimSpace(g.vpsHostEntry.Text)
+		g.cfg.QuotaURL = strings.TrimSpace(g.quotaPortalEntry.Text)
 
 		if err := config.SaveConfig(g.cfg); err != nil {
 			dialog.ShowError(err, g.window)
@@ -451,6 +470,7 @@ func (g *GUI) buildSettingsTab() fyne.CanvasObject {
 		widget.NewFormItem("Puerto:", g.proxyPortEntry),
 		widget.NewFormItem("Autenticación:", g.authTypeSelect),
 		widget.NewFormItem("Modo de Captura:", g.captureModeSelect),
+		widget.NewFormItem("Portal de Cuota:", g.quotaPortalEntry),
 	)
 
 	settingsBox := container.NewVBox(
@@ -573,6 +593,116 @@ func (g *GUI) setupAccountSection() *fyne.Container {
 	))
 
 	return container.NewVBox(card)
+}
+
+func (g *GUI) setupQuotaSection() *fyne.Container {
+	header := widget.NewLabelWithStyle("CUOTA DE NAVEGACIÓN (cuota.uci.cu)", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+
+	g.quotaProgressBar = widget.NewProgressBar()
+	g.quotaProgressBar.SetValue(0.0)
+
+	g.quotaStatusLabel = widget.NewLabel("Presiona 'Consultar' para verificar saldo")
+	g.quotaStatusLabel.TextStyle = fyne.TextStyle{Monospace: true}
+
+	g.quotaRefreshBtn = widget.NewButtonWithIcon("Consultar Cuota", theme.ViewRefreshIcon(), func() {
+		g.RefreshQuota()
+	})
+
+	topRow := container.NewBorder(
+		nil, nil, nil, g.quotaRefreshBtn, g.quotaStatusLabel,
+	)
+
+	card := widget.NewCard("", "", container.NewVBox(
+		header,
+		g.quotaProgressBar,
+		topRow,
+	))
+
+	return container.NewVBox(card)
+}
+
+func (g *GUI) RefreshQuota() {
+	active := g.cfg.GetActiveAccount()
+	if active == nil || strings.TrimSpace(active.Username) == "" {
+		g.AppendLog("[CUOTA] ✗ No hay credenciales configuradas para consultar la cuota.")
+		return
+	}
+
+	if g.quotaStatusLabel != nil {
+		g.quotaStatusLabel.SetText("Consultando cuota.uci.cu...")
+	}
+	if g.quotaRefreshBtn != nil {
+		g.quotaRefreshBtn.Disable()
+	}
+
+	cleanDom, cleanU := auth.SplitDomainUser(active.Domain, active.Username)
+	_ = cleanDom
+	g.AppendLog(fmt.Sprintf("[CUOTA] Consultando saldo en portal para '%s'...", cleanU))
+
+	go func() {
+		if g.quotaRefreshBtn != nil {
+			defer g.quotaRefreshBtn.Enable()
+		}
+
+		portalURL := g.cfg.QuotaURL
+		if portalURL == "" {
+			portalURL = "https://cuota.uci.cu/"
+		}
+
+		info, err := quota.FetchUCIQuota(portalURL, cleanU, active.Password, nil)
+		if err != nil {
+			if g.quotaStatusLabel != nil {
+				g.quotaStatusLabel.SetText(fmt.Sprintf("Error: %s", err.Error()))
+			}
+			g.AppendLog(fmt.Sprintf("[CUOTA] ✗ Error contactando portal: %v", err))
+			return
+		}
+
+		if !info.Success {
+			if g.quotaStatusLabel != nil {
+				g.quotaStatusLabel.SetText(fmt.Sprintf("✗ %s", info.ErrorMessage))
+			}
+			g.AppendLog(fmt.Sprintf("[CUOTA] ✗ %s", info.ErrorMessage))
+			return
+		}
+
+		frac := info.ClampedPercent / 100.0
+		if frac > 1.0 {
+			frac = 1.0
+		} else if frac < 0.0 {
+			frac = 0.0
+		}
+		if g.quotaProgressBar != nil {
+			g.quotaProgressBar.SetValue(frac)
+		}
+
+		var statusStr string
+		if info.IsOverdraft {
+			statusStr = fmt.Sprintf("Sobregiro: +%.1f MB (%.1f MB / %.1f MB · %.0f%% usado - Permitido)",
+				info.OverdraftMB, info.UsedMB, info.AllocatedMB, info.PercentUsed)
+		} else {
+			statusStr = fmt.Sprintf("Restante: %.1f MB / %.1f MB (%.0f%% usado)",
+				info.RemainingMB, info.AllocatedMB, info.PercentUsed)
+		}
+
+		if g.quotaStatusLabel != nil {
+			g.quotaStatusLabel.SetText(statusStr)
+		}
+
+		if info.IsOverdraft {
+			g.AppendLog(fmt.Sprintf("[CUOTA] ℹ Estado: Sobregiro permitido (+%.1f MB sobre la cuota base). Consumo total: %.1f MB de %.1f MB (%.0f%%).",
+				info.OverdraftMB, info.UsedMB, info.AllocatedMB, info.PercentUsed))
+		} else {
+			g.AppendLog(fmt.Sprintf("[CUOTA] ✓ Saldo: Restante %.1f MB de %.1f MB (%.0f%% usado). Estado: %s",
+				info.RemainingMB, info.AllocatedMB, info.PercentUsed, info.StatusLevel))
+		}
+
+		if info.StatusLevel == "exhausted" {
+			g.AppendLog("[ALERTA] ⚠ Tu cuota de navegación está agotada. Squid bloqueará cualquier conexión.")
+		} else if info.StatusLevel == "critical" {
+			g.AppendLog("[ALERTA] ⚠ Te queda menos del 10% de cuota de navegación disponible.")
+		}
+	}()
 }
 
 func (g *GUI) updateAccountDetailsText(acc *config.UserAccount) {
@@ -810,6 +940,11 @@ func (g *GUI) toggleConnection() {
 				g.statusText.Refresh()
 			}
 		})
+
+		// Automatically consult quota if enabled
+		if g.cfg.AutoCheckQuota {
+			go g.RefreshQuota()
+		}
 	}()
 }
 

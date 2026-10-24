@@ -20,6 +20,7 @@ import {
   KeyRound,
   FileCode2,
   Zap,
+  Gauge,
 } from 'lucide-react';
 
 export default function App() {
@@ -61,6 +62,41 @@ export default function App() {
   // Squid ACL 403 Audit state
   const [auditRunning, setAuditRunning] = useState(false);
   const [auditDone, setAuditDone] = useState(true);
+
+  // Quota monitor state (cuota.uci.cu)
+  const [quotaAllocatedMB, setQuotaAllocatedMB] = useState(500);
+  const [quotaUsedMB, setQuotaUsedMB] = useState(368.4);
+  const [quotaLoading, setQuotaLoading] = useState(false);
+  const [quotaLastCheck, setQuotaLastCheck] = useState('Hace 2 min');
+  const [quotaPortalUrl, setQuotaPortalUrl] = useState('https://cuota.uci.cu/');
+
+  // Overdraft / Sobregiro calculations (permitted in UCI intranet)
+  const isOverdraft = quotaUsedMB > quotaAllocatedMB;
+  const overdraftMB = isOverdraft ? +(quotaUsedMB - quotaAllocatedMB).toFixed(1) : 0;
+  const quotaRemainingMB = isOverdraft ? -overdraftMB : +(quotaAllocatedMB - quotaUsedMB).toFixed(1);
+  const quotaPercentUsed = (quotaUsedMB / quotaAllocatedMB) * 100;
+  // Strictly clamped between 0% and 100% so CSS width never overflows container or distorts flex layout
+  const clampedProgressPercent = Math.min(100, Math.max(0, quotaPercentUsed));
+
+  const refreshQuota = () => {
+    setQuotaLoading(true);
+    addLog(`[CUOTA] Consultando saldo en ${quotaPortalUrl} para '${username}'...`);
+    setTimeout(() => {
+      const simulatedUsed = +(quotaUsedMB + (Math.random() * 4 + 0.5)).toFixed(1);
+      setQuotaUsedMB(simulatedUsed);
+      setQuotaLoading(false);
+      setQuotaLastCheck('Ahora mismo');
+      if (simulatedUsed > quotaAllocatedMB) {
+        const over = (simulatedUsed - quotaAllocatedMB).toFixed(1);
+        const perc = ((simulatedUsed / quotaAllocatedMB) * 100).toFixed(0);
+        addLog(`[CUOTA] ℹ Sobregiro detectado (+${over} MB sobre el plan de ${quotaAllocatedMB} MB, ${perc}% consumido - Estado: Sobregiro permitido).`);
+      } else {
+        const rem = (quotaAllocatedMB - simulatedUsed).toFixed(1);
+        const perc = ((simulatedUsed / quotaAllocatedMB) * 100).toFixed(0);
+        addLog(`[CUOTA] ✓ Saldo: Restante ${rem} MB de ${quotaAllocatedMB} MB (${perc}% consumido). Estado portal: 200 OK.`);
+      }
+    }, 850);
+  };
 
   const runAclAudit = () => {
     setAuditRunning(true);
@@ -113,6 +149,7 @@ export default function App() {
         addLog(`✓ [AUTH-EXITO] ¡Autenticación NTLM exitosa! Túnel establecido con ${proxyHost}:${proxyPort}.`);
         addLog(`✓ [DNS DoH] Servidor RFC 8484 activo en UDP 53. Resolviendo nombres de dominio vía HTTPS.`);
         addLog(`✓ [SISTEMA] Adaptador Wintun configurado con métrica 1. Todo el tráfico y DNS redirigidos.`);
+        refreshQuota();
       }, 1000);
     }, 1200);
   };
@@ -163,6 +200,9 @@ export default function App() {
         auth_type: authScheme,
         capture_mode: captureMode,
         local_socks_port: 1080,
+        local_http_port: 8081,
+        quota_url: quotaPortalUrl,
+        auto_check_quota: true,
         vps_enabled: false,
         vps_server: '',
         accounts: [
@@ -275,7 +315,7 @@ export default function App() {
         {/* Tab 1: Hub */}
         {activeTab === 'hub' && (
           <div className="space-y-6">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
               <div className="bg-slate-900/60 border border-slate-800 rounded-xl p-5 hover:border-slate-700 transition">
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-medium text-slate-400">Proxy Objetivo</span>
@@ -305,7 +345,53 @@ export default function App() {
                     </span>
                   </div>
                   <div className="text-xs text-slate-400 mt-1">
-                    Dominio: <code className="text-cyan-300 font-mono">UCI</code> (de {domain}) · Usuario: <code className="text-cyan-300 font-mono">{username}</code>
+                    Dominio: <code className="text-cyan-300 font-mono">UCI</code> · Usuario: <code className="text-cyan-300 font-mono">{username}</code>
+                  </div>
+                </div>
+              </div>
+
+              <div className={`bg-slate-900/60 border rounded-xl p-5 transition ${isOverdraft ? 'border-fuchsia-800/60 shadow-sm shadow-fuchsia-950/40' : 'border-slate-800 hover:border-slate-700'}`}>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-medium text-slate-400">Cuota de Navegación</span>
+                  <Gauge className={`w-4 h-4 ${isOverdraft ? 'text-fuchsia-400' : 'text-cyan-400'}`} />
+                </div>
+                <div className="mt-3">
+                  <div className="text-xl font-bold text-slate-100 flex items-center justify-between">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      {isOverdraft ? (
+                        <>
+                          <span className="text-fuchsia-400 font-bold truncate">+{overdraftMB.toFixed(1)} MB</span>
+                          <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-fuchsia-950 text-fuchsia-300 border border-fuchsia-800/80 shrink-0">
+                            Sobregiro
+                          </span>
+                        </>
+                      ) : (
+                        <span>{quotaRemainingMB.toFixed(1)} MB</span>
+                      )}
+                    </div>
+                    <span className="text-xs font-mono font-normal text-slate-400 shrink-0">/ {quotaAllocatedMB} MB</span>
+                  </div>
+                  <div className="mt-2 w-full max-w-full bg-slate-950 rounded-full h-2 overflow-hidden border border-slate-800 relative">
+                    <div
+                      className={`h-full rounded-full transition-all duration-300 ${
+                        isOverdraft
+                          ? 'bg-gradient-to-r from-purple-500 via-fuchsia-500 to-pink-500 shadow-sm shadow-fuchsia-500/50'
+                          : quotaPercentUsed >= 90
+                          ? 'bg-red-500'
+                          : quotaPercentUsed >= 70
+                          ? 'bg-amber-500'
+                          : 'bg-cyan-500'
+                      }`}
+                      style={{ width: `${clampedProgressPercent}%` }}
+                    ></div>
+                  </div>
+                  <div className="text-[11px] text-slate-400 mt-1 flex justify-between items-center">
+                    <span className={isOverdraft ? 'text-fuchsia-300 font-medium' : ''}>
+                      {quotaPercentUsed.toFixed(0)}% {isOverdraft ? '(Sobregiro permitido)' : 'consumido'}
+                    </span>
+                    <span className={`font-mono text-[10px] ${isOverdraft ? 'text-fuchsia-400' : 'text-cyan-400'}`}>
+                      {isOverdraft ? `Exceso: +${overdraftMB.toFixed(1)} MB` : 'cuota.uci.cu'}
+                    </span>
                   </div>
                 </div>
               </div>
@@ -317,10 +403,10 @@ export default function App() {
                 </div>
                 <div className="mt-3">
                   <div className="text-xl font-semibold text-amber-300 flex items-center gap-2">
-                    Circuit Breaker Activo
+                    Circuit Breaker
                   </div>
                   <div className="text-xs text-slate-400 mt-1">
-                    Máximo 1 intento controlado. Cero loops de reconexión si hay error 407.
+                    1 intento controlado. Cero loops de reconexión si hay error 407.
                   </div>
                 </div>
               </div>
@@ -378,6 +464,18 @@ export default function App() {
                       </h4>
                       <p className="text-xs text-slate-400 mt-0.5">
                         Se eliminó el reporte repetitivo de 6 líneas en 1 segundo mediante control de bloqueo atómico <code className="text-cyan-300">alreadyLocked</code> y flag <code className="text-cyan-300">inPrecheck</code>.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="p-3 rounded-lg bg-slate-900 border border-slate-800 flex gap-3">
+                    <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
+                    <div>
+                      <h4 className="text-xs font-semibold text-slate-200">
+                        Monitor de Cuota de Navegación UCI (cuota.uci.cu)
+                      </h4>
+                      <p className="text-xs text-slate-400 mt-0.5">
+                        Integración del parser de cuota inspirado en <code className="text-cyan-300">UCIProxy</code> (danielrodcaball). Consulta automáticamente el portal interno <code className="text-cyan-300">cuota.uci.cu</code> y muestra el saldo restante en MB para evitar desconexiones inesperadas por cuota agotada.
                       </p>
                     </div>
                   </div>
@@ -580,6 +678,83 @@ export default function App() {
                     </div>
                   </div>
 
+                  {/* Quota de Navegación UCI Section */}
+                  <div className={`p-3 rounded-lg bg-slate-950/70 border space-y-2 transition ${isOverdraft ? 'border-fuchsia-900/60 shadow-sm shadow-fuchsia-950/30' : 'border-slate-800'}`}>
+                    <div className="flex items-center justify-between text-xs">
+                      <div className="flex items-center gap-1.5 font-semibold text-slate-300">
+                        <Gauge className={`w-3.5 h-3.5 ${isOverdraft ? 'text-fuchsia-400' : 'text-cyan-400'}`} />
+                        <span>CUOTA DE NAVEGACIÓN</span>
+                      </div>
+                      {isOverdraft ? (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded font-bold bg-fuchsia-950 text-fuchsia-300 border border-fuchsia-800/80">
+                          Sobregiro (+{(quotaPercentUsed - 100).toFixed(0)}%)
+                        </span>
+                      ) : (
+                        <span
+                          className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                            quotaRemainingMB < 50
+                              ? 'bg-red-950 text-red-400 border border-red-800/60'
+                              : quotaRemainingMB < 150
+                              ? 'bg-amber-950 text-amber-400 border border-amber-800/60'
+                              : 'bg-emerald-950 text-emerald-400 border border-emerald-800/60'
+                          }`}
+                        >
+                          {quotaRemainingMB < 50 ? 'Crítico' : quotaRemainingMB < 150 ? 'Advertencia' : 'Normal'}
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="space-y-1">
+                      <div className="w-full max-w-full bg-slate-900 rounded-full h-2.5 overflow-hidden border border-slate-800 relative">
+                        <div
+                          className={`h-full transition-all duration-500 rounded-full ${
+                            isOverdraft
+                              ? 'bg-gradient-to-r from-purple-500 via-fuchsia-500 to-pink-500 shadow-sm shadow-fuchsia-500/50'
+                              : quotaPercentUsed >= 90
+                              ? 'bg-red-500'
+                              : quotaPercentUsed >= 70
+                              ? 'bg-amber-500'
+                              : 'bg-cyan-500'
+                          }`}
+                          style={{ width: `${clampedProgressPercent}%` }}
+                        ></div>
+                      </div>
+                      <div className="flex justify-between items-center text-[10px] font-mono">
+                        {isOverdraft ? (
+                          <span className="text-fuchsia-300">
+                            Sobregiro: <strong className="text-fuchsia-400">+{overdraftMB.toFixed(1)} MB</strong> (Permitido)
+                          </span>
+                        ) : (
+                          <span className="text-slate-400">
+                            Restante: <strong className="text-emerald-400">{quotaRemainingMB.toFixed(1)} MB</strong>
+                          </span>
+                        )}
+                        <span className={isOverdraft ? 'text-fuchsia-400 font-bold' : 'text-slate-400'}>
+                          {quotaPercentUsed.toFixed(0)}% de {quotaAllocatedMB} MB
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between pt-1 border-t border-slate-900 text-[10px]">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-slate-500 font-mono">cuota.uci.cu</span>
+                        {isOverdraft && (
+                          <span className="text-[9px] px-1 rounded bg-fuchsia-950/80 text-fuchsia-400 border border-fuchsia-800/60">
+                            Overdraft OK
+                          </span>
+                        )}
+                      </div>
+                      <button
+                        onClick={refreshQuota}
+                        disabled={quotaLoading}
+                        className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-cyan-300 flex items-center gap-1 transition disabled:opacity-50"
+                      >
+                        <RefreshCw className={`w-3 h-3 ${quotaLoading ? 'animate-spin' : ''}`} />
+                        {quotaLoading ? 'Consultando...' : 'Consultar Cuota'}
+                      </button>
+                    </div>
+                  </div>
+
                   {/* Realtime Speed Chart */}
                   <div className="pt-2 border-t border-slate-800/80">
                     <div className="flex items-center justify-between text-[11px] text-slate-400 mb-1">
@@ -659,6 +834,71 @@ export default function App() {
                         <option value="tun">tun (Wintun L3 completo)</option>
                         <option value="system_proxy">system_proxy (Solo navegador)</option>
                       </select>
+                    </div>
+
+                    <div>
+                      <label className="text-slate-400 block mb-1">Portal de Cuota (URL):</label>
+                      <input
+                        type="text"
+                        value={quotaPortalUrl}
+                        onChange={(e) => setQuotaPortalUrl(e.target.value)}
+                        className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-1.5 font-mono text-slate-200 focus:outline-none focus:border-cyan-500"
+                        placeholder="https://cuota.uci.cu/"
+                      />
+                    </div>
+
+                    <div className="pt-2 border-t border-slate-800/80 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-slate-400">Plan de Cuota Base:</span>
+                        <div className="flex gap-1.5">
+                          {[500, 1024, 2048].map((plan) => (
+                            <button
+                              key={plan}
+                              onClick={() => {
+                                setQuotaAllocatedMB(plan);
+                                if (quotaUsedMB > plan && !isOverdraft) setQuotaUsedMB(+(plan * 0.7).toFixed(1));
+                              }}
+                              className={`px-2 py-0.5 rounded text-[10px] font-mono transition ${
+                                quotaAllocatedMB === plan
+                                  ? 'bg-cyan-600 text-white font-bold'
+                                  : 'bg-slate-800 text-slate-400 hover:text-slate-200'
+                              }`}
+                            >
+                              {plan >= 1024 ? `${plan / 1024} GB` : `${plan} MB`}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="flex items-center justify-between pt-1">
+                        <span className="text-slate-400">Test de Sobregiro:</span>
+                        <div className="flex gap-1.5">
+                          <button
+                            onClick={() => {
+                              setQuotaAllocatedMB(500);
+                              setQuotaUsedMB(540);
+                              addLog('[TEST SOBREGIRO] Activado: 540 MB / 500 MB (108%). La barra se fija al 100% con gradiente de sobregiro y la UI no se distorsiona.');
+                            }}
+                            className={`px-2 py-1 rounded text-[10px] font-medium transition flex items-center gap-1 ${
+                              isOverdraft
+                                ? 'bg-fuchsia-600 text-white font-bold shadow-sm shadow-fuchsia-500/30'
+                                : 'bg-slate-800 hover:bg-slate-700 text-fuchsia-300 border border-fuchsia-800/60'
+                            }`}
+                          >
+                            <span>⚡ Simular Sobregiro (108%)</span>
+                          </button>
+                          <button
+                            onClick={() => {
+                              setQuotaAllocatedMB(500);
+                              setQuotaUsedMB(350);
+                              addLog('[TEST SOBREGIRO] Restaurado consumo normal: 350 MB / 500 MB (70%).');
+                            }}
+                            className="px-2 py-1 rounded text-[10px] bg-slate-800 hover:bg-slate-700 text-slate-300 transition"
+                          >
+                            Normal (70%)
+                          </button>
+                        </div>
+                      </div>
                     </div>
 
                     <button
@@ -1015,6 +1255,107 @@ export default function App() {
                 </div>
               </div>
             </div>
+
+            {/* UCI Quota Portal Scraper & Regex Parser Card */}
+            <div className="bg-slate-900/40 border border-slate-800 rounded-xl p-6 space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-4">
+                <div className="flex items-center gap-2.5">
+                  <div className="p-2 rounded-lg bg-cyan-500/10 text-cyan-400">
+                    <Gauge className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="text-base font-semibold text-slate-100">
+                      Sonda y Parser del Portal de Cuota (<code className="text-cyan-300">cuota.uci.cu</code>)
+                    </h3>
+                    <p className="text-xs text-slate-400">
+                      Módulo <code className="text-cyan-300">pkg/quota</code> para consultar el saldo de datos sin abrir el navegador.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={refreshQuota}
+                  disabled={quotaLoading}
+                  className="px-3.5 py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-medium flex items-center gap-1.5 transition disabled:opacity-50 self-start sm:self-center"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${quotaLoading ? 'animate-spin' : ''}`} />
+                  {quotaLoading ? 'Consultando...' : 'Testear Consulta cuota.uci.cu'}
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className={`p-3.5 rounded-lg bg-slate-950 border space-y-2 transition ${isOverdraft ? 'border-fuchsia-800/60 shadow-sm shadow-fuchsia-950/30' : 'border-slate-800'}`}>
+                  <div className="flex items-center justify-between text-[10px] font-semibold text-slate-400 uppercase tracking-wider">
+                    <span>Resumen de Saldo Extraído</span>
+                    {isOverdraft && (
+                      <span className="px-1.5 py-0.2 rounded bg-fuchsia-950 text-fuchsia-300 border border-fuchsia-800/80 text-[9px] font-bold">
+                        SOBREGIRO
+                      </span>
+                    )}
+                  </div>
+                  <div className="space-y-1.5 font-mono text-xs">
+                    <div className="flex justify-between">
+                      <span className="text-slate-400">Cuota Asignada:</span>
+                      <span className="text-slate-200 font-semibold">{quotaAllocatedMB.toFixed(2)} MB</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-400">Consumo Actual:</span>
+                      <span className={isOverdraft ? 'text-fuchsia-400 font-bold' : 'text-amber-400'}>
+                        {quotaUsedMB.toFixed(2)} MB
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-400">Saldo / Sobregiro:</span>
+                      {isOverdraft ? (
+                        <span className="text-fuchsia-300 font-bold">+{overdraftMB.toFixed(2)} MB (Excedido)</span>
+                      ) : (
+                        <span className="text-emerald-400 font-bold">{quotaRemainingMB.toFixed(2)} MB</span>
+                      )}
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="text-slate-400">Porcentaje:</span>
+                      <span className={isOverdraft ? 'text-fuchsia-300 font-bold' : 'text-cyan-300'}>
+                        {quotaPercentUsed.toFixed(1)}% {isOverdraft ? '(Sobregiro OK)' : ''}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="pt-2 border-t border-slate-900">
+                    <div className="text-[10px] text-slate-400 mb-1">Barra Segura (Clamped 0..100%):</div>
+                    <div className="w-full max-w-full bg-slate-900 rounded-full h-2 overflow-hidden border border-slate-800">
+                      <div
+                        className={`h-full transition-all duration-300 rounded-full ${
+                          isOverdraft
+                            ? 'bg-gradient-to-r from-purple-500 via-fuchsia-500 to-pink-500'
+                            : quotaPercentUsed >= 90
+                            ? 'bg-red-500'
+                            : quotaPercentUsed >= 70
+                            ? 'bg-amber-500'
+                            : 'bg-cyan-500'
+                        }`}
+                        style={{ width: `${clampedProgressPercent}%` }}
+                      ></div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="md:col-span-2 p-3.5 rounded-lg bg-slate-950 border border-slate-800 space-y-2">
+                  <div className="flex items-center justify-between text-[10px] font-semibold text-slate-400 uppercase tracking-wider">
+                    <span>Fragmento HTML Recibido de cuota.uci.cu</span>
+                    <span className="text-emerald-400 font-mono">HTTP 200 OK · Basic Auth</span>
+                  </div>
+                  <pre className="p-2.5 rounded bg-slate-900 border border-slate-800/80 font-mono text-[11px] text-cyan-300 overflow-x-auto leading-relaxed">
+{`<div class="quota-container">
+  <p><strong>Usuario:</strong> ${username}</p>
+  <p><strong>Cuota total asignada:</strong> ${quotaAllocatedMB.toFixed(2)} MB</p>
+  <p><strong>Consumo del periodo:</strong> ${quotaUsedMB.toFixed(2)} MB</p>
+  <p><strong>Saldo disponible:</strong> ${isOverdraft ? `-${overdraftMB.toFixed(2)} MB (Sobregiro autorizado)` : `${quotaRemainingMB.toFixed(2)} MB`}</p>
+</div>`}
+                  </pre>
+                  <p className="text-[11px] text-slate-400 leading-relaxed">
+                    <strong>Blindaje contra distorsiones de interfaz:</strong> Si el usuario consume más del 100% de su saldo (sobregiro permitido en la red UCI), el cálculo de visualización se acota estrictamente a <code className="text-cyan-300">clampedProgressPercent (0..100%)</code> con <code className="text-cyan-300">overflow-hidden</code> para que el ancho CSS nunca exceda el contenedor ni deforme la cuadrícula.
+                  </p>
+                </div>
+              </div>
+            </div>
           </div>
         )}
 
@@ -1106,6 +1447,13 @@ export default function App() {
                   <h4 className="font-semibold text-slate-200">Privilegios de Administrador</h4>
                   <p className="text-slate-400 mt-1">
                     Para crear el adaptador de red virtual <code className="text-cyan-300">Wintun</code> y configurar las rutas IP de Windows, <code className="text-cyan-300">unitunnel.exe</code> requiere ejecutarse con permisos de Administrador (el ejecutable incluye el manifiesto UAC para solicitar elevación automáticamente).
+                  </p>
+                </div>
+
+                <div className="p-3 rounded-lg bg-slate-900/90 border border-slate-800">
+                  <h4 className="font-semibold text-slate-200">¿Cómo funciona la consulta de cuota y es legal usarla?</h4>
+                  <p className="text-slate-400 mt-1">
+                    Es 100% legal y seguro: UniTunnel se comunica con el portal interno <code className="text-cyan-300">https://cuota.uci.cu/</code> mediante HTTP Basic Auth utilizando tus credenciales institucionales (el mismo portal web que visitas desde la intranet). Extrae automáticamente tu saldo asignado, consumido y restante en MB para avisarte con un semáforo visual antes de que se agote la cuota y Squid empiece a bloquear conexiones.
                   </p>
                 </div>
               </div>

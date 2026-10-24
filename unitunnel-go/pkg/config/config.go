@@ -33,6 +33,8 @@ type Config struct {
 	VPSEnabled      bool          `json:"vps_enabled"`
 	VPSServer       string        `json:"vps_server"`
 	VPSSecret       string        `json:"vps_secret"`
+	QuotaURL        string        `json:"quota_url"`
+	AutoCheckQuota  bool          `json:"auto_check_quota"`
 	StartMinimized  bool          `json:"start_minimized"`
 	AutoStart       bool          `json:"auto_start"`
 }
@@ -42,6 +44,8 @@ func DefaultConfig() *Config {
 		ProxyHost:       "10.0.0.1",
 		ProxyPort:       8080,
 		AuthType:        "auto",
+		QuotaURL:        "https://cuota.uci.cu/",
+		AutoCheckQuota:  true,
 		ActiveAccountID: "default",
 		Accounts: []UserAccount{
 			{
