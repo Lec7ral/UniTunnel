@@ -49,8 +49,9 @@ func FetchUCIQuota(portalURL, username, password string, proxyURL *url.URL) (*Qu
 	}
 
 	transport := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		Timeout:         8 * time.Second,
+		TLSClientConfig:       &tls.Config{InsecureSkipVerify: true},
+		ResponseHeaderTimeout: 8 * time.Second,
+		TLSHandshakeTimeout:   5 * time.Second,
 	}
 
 	if proxyURL != nil {
