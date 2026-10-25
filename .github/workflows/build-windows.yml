@@ -19,7 +19,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version: '1.27.3'
           check-latest: true
 
       - name: Set up Node.js
@@ -30,7 +30,7 @@ jobs:
 
       - name: Build React Frontend
         run: |
-          npm ci
+          npm ci --include=optional
           npm run build
           Write-Host "React frontend compiled to dist/ directory."
 
