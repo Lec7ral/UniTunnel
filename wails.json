@@ -1,0 +1,29 @@
+{
+  "$schema": "https://wails.io/schemas/config.v3.json",
+  "name": "UniTunnel",
+  "description": "UniTunnel - Acceso Universitario para Windows (Wails v3)",
+  "version": "2.4.0",
+  "author": {
+    "name": "UniTunnel Dev",
+    "email": "dev@unitunnel.uci"
+  },
+  "frontend": {
+    "dir": "dist",
+    "devUrl": "http://localhost:3000"
+  },
+  "backend": {
+    "dir": "unitunnel-go"
+  },
+  "build": {
+    "outputFilename": "unitunnel.exe",
+    "clean": true
+  },
+  "windows": {
+    "certificate": "",
+    "digestAlgorithm": "SHA256",
+    "timestampServer": "",
+    "uac": {
+      "level": "requireAdministrator"
+    }
+  }
+}

@@ -17,42 +17,64 @@ type UserAccount struct {
 }
 
 type Config struct {
-	ProxyHost       string        `json:"proxy_host"`
-	ProxyPort       int           `json:"proxy_port"`
-	AuthType        string        `json:"auth_type"` // "auto", "ntlm", "basic", "none"
+	// Proxy settings
+	ProxyHost string `json:"proxy_host"`
+	ProxyPort int    `json:"proxy_port"`
+	AuthType  string `json:"auth_type"` // "auto", "ntlm", "basic", "none"
+
+	// User accounts
 	ActiveAccountID string        `json:"active_account_id"`
 	Accounts        []UserAccount `json:"accounts"`
-	LocalSocksPort  int           `json:"local_socks_port"`
-	LocalHTTPPort   int           `json:"local_http_port"`
-	CaptureMode     string        `json:"capture_mode"` // "tun" or "system_proxy"
-	TunName         string        `json:"tun_name"`
-	TunIPv4         string        `json:"tun_ipv4"`
-	TunMask         string        `json:"tun_mask"`
-	TunDNS          string        `json:"tun_dns"`
-	BypassRoutes    []string      `json:"bypass_routes"`
-	VPSEnabled      bool          `json:"vps_enabled"`
-	VPSServer       string        `json:"vps_server"`
-	VPSSecret       string        `json:"vps_secret"`
-	QuotaURL        string        `json:"quota_url"`
-	AutoCheckQuota  bool          `json:"auto_check_quota"`
-	StartMinimized  bool          `json:"start_minimized"`
-	AutoStart       bool          `json:"auto_start"`
+
+	// Local services
+	LocalSocksPort int `json:"local_socks_port"`
+	LocalHTTPPort  int `json:"local_http_port"`
+
+	// Capture & Tunnel mode
+	CaptureMode  string   `json:"capture_mode"` // "tun" or "system_proxy"
+	TunName      string   `json:"tun_name"`
+	TunIPv4      string   `json:"tun_ipv4"`
+	TunMask      string   `json:"tun_mask"`
+	TunDNS       string   `json:"tun_dns"`
+	BypassRoutes []string `json:"bypass_routes"`
+
+	// Network Profiles / Mode
+	// "uci_cable": UniTunnel ON + Ethernet metric priority 10, Wi-Fi 100
+	// "wifi_mobile": UniTunnel OFF/Direct + Wi-Fi metric priority 10, Ethernet 100 (allows 4G hotspot with cable plugged in)
+	// "direct": Automatic Windows metrics restored + no local proxy
+	NetworkMode string `json:"network_mode"`
+
+	// Quota monitor
+	QuotaURL              string `json:"quota_url"`
+	AutoCheckQuota        bool   `json:"auto_check_quota"`
+	QuotaCheckIntervalMin int    `json:"quota_check_interval_min"`
+
+	// Windows system integration
+	StartMinimized bool `json:"start_minimized"`
+	AutoStart      bool `json:"auto_start"`
+	AlwaysOnTop    bool `json:"always_on_top"`
+
+	// Optional VPS Bridge
+	VPSEnabled bool   `json:"vps_enabled"`
+	VPSServer  string `json:"vps_server"`
+	VPSSecret  string `json:"vps_secret"`
 }
 
 func DefaultConfig() *Config {
 	return &Config{
-		ProxyHost:       "10.0.0.1",
-		ProxyPort:       8080,
-		AuthType:        "auto",
-		QuotaURL:        "https://cuota.uci.cu/",
-		AutoCheckQuota:  true,
-		ActiveAccountID: "default",
+		ProxyHost:             "10.0.0.1",
+		ProxyPort:             8080,
+		AuthType:              "auto",
+		QuotaURL:              "https://cuota.uci.cu/",
+		AutoCheckQuota:        true,
+		QuotaCheckIntervalMin: 15,
+		ActiveAccountID:       "default",
 		Accounts: []UserAccount{
 			{
 				ID:       "default",
 				Name:     "Cuenta Principal",
 				Username: "",
-				Domain:   "",
+				Domain:   "uci.cu",
 				Password: "",
 			},
 		},
@@ -68,11 +90,13 @@ func DefaultConfig() *Config {
 			"172.16.0.0/12",
 			"192.168.0.0/16",
 		},
+		NetworkMode:    "uci_cable",
 		VPSEnabled:     false,
 		VPSServer:      "",
 		VPSSecret:      "",
-		StartMinimized: true,
+		StartMinimized: false,
 		AutoStart:      false,
+		AlwaysOnTop:    false,
 	}
 }
 
@@ -86,10 +110,12 @@ func (c *Config) GetActiveAccount() *UserAccount {
 		c.ActiveAccountID = c.Accounts[0].ID
 		return &c.Accounts[0]
 	}
-	// Fallback new default account
 	acc := UserAccount{
-		ID:   "default",
-		Name: "Cuenta Principal",
+		ID:       "default",
+		Name:     "Cuenta Principal",
+		Domain:   "uci.cu",
+		Username: "",
+		Password: "",
 	}
 	c.Accounts = append(c.Accounts, acc)
 	c.ActiveAccountID = "default"
@@ -118,7 +144,7 @@ func (c *Config) AddAccount(name, user, domain, pass string) *UserAccount {
 
 func (c *Config) DeleteAccount(id string) bool {
 	if len(c.Accounts) <= 1 {
-		return false // Preserve at least one account profile
+		return false
 	}
 	var newAccounts []UserAccount
 	for _, acc := range c.Accounts {
@@ -168,6 +194,9 @@ func LoadConfig() (*Config, error) {
 	if len(cfg.Accounts) == 0 {
 		cfg.Accounts = DefaultConfig().Accounts
 		cfg.ActiveAccountID = cfg.Accounts[0].ID
+	}
+	if cfg.NetworkMode == "" {
+		cfg.NetworkMode = "uci_cable"
 	}
 	return cfg, nil
 }

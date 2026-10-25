@@ -1,4 +1,4 @@
-name: Build Windows Application (UniTunnel)
+name: Build Windows Application (UniTunnel Wails v3)
 
 on:
   push:
@@ -22,99 +22,80 @@ jobs:
           go-version: '1.22'
           check-latest: true
 
-      - name: Verify MinGW GCC (Cgo support for Fyne)
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Build React Frontend
         run: |
-          gcc --version
+          npm ci
+          npm run build
+          Write-Host "React frontend compiled to dist/ directory."
 
       - name: Download Wintun Driver DLL (x64)
         run: |
-          # Create dist folder
-          New-Item -ItemType Directory -Force -Path dist
-          
-          # Download official Wintun 0.14.1 release zip from wireguard
-          Write-Host "Downloading official Wintun release..."
-          Invoke-WebRequest -Uri "https://www.wintun.net/builds/wintun-0.14.1.zip" -OutFile "dist\wintun.zip"
-          
-          # Extract wintun.dll for amd64
-          Expand-Archive -Path "dist\wintun.zip" -DestinationPath "dist\wintun_extracted" -Force
-          Copy-Item -Path "dist\wintun_extracted\wintun\bin\amd64\wintun.dll" -Destination "dist\wintun.dll" -Force
-          
-          # Clean up zip
-          Remove-Item -Recurse -Force "dist\wintun_extracted", "dist\wintun.zip"
-          Write-Host "Wintun.dll successfully placed in dist folder."
+          New-Item -ItemType Directory -Force -Path dist-release
+          Write-Host "Downloading official Wintun 0.14.1 release..."
+          Invoke-WebRequest -Uri "https://www.wintun.net/builds/wintun-0.14.1.zip" -OutFile "dist-release\wintun.zip"
+          Expand-Archive -Path "dist-release\wintun.zip" -DestinationPath "dist-release\wintun_extracted" -Force
+          Copy-Item -Path "dist-release\wintun_extracted\wintun\bin\amd64\wintun.dll" -Destination "dist-release\wintun.dll" -Force
+          Remove-Item -Recurse -Force "dist-release\wintun_extracted", "dist-release\wintun.zip"
+          Write-Host "Wintun.dll placed into release folder."
 
-      - name: Download Tun2Socks L3 VPN Engine (x64)
+      - name: Download Tun2Socks L3 Engine (x64)
         run: |
           Write-Host "Downloading tun2socks L3 engine..."
-          Invoke-WebRequest -Uri "https://github.com/xjasonlyu/tun2socks/releases/download/v2.5.2/tun2socks-windows-amd64.zip" -OutFile "dist\tun2socks.zip"
-          Expand-Archive -Path "dist\tun2socks.zip" -DestinationPath "dist\tun2socks_extracted" -Force
-          Copy-Item -Path "dist\tun2socks_extracted\tun2socks-windows-amd64.exe" -Destination "dist\tun2socks.exe" -Force
-          Remove-Item -Recurse -Force "dist\tun2socks_extracted", "dist\tun2socks.zip"
-          Write-Host "Tun2socks.exe successfully placed in dist folder."
+          Invoke-WebRequest -Uri "https://github.com/xjasonlyu/tun2socks/releases/download/v2.5.2/tun2socks-windows-amd64.zip" -OutFile "dist-release\tun2socks.zip"
+          Expand-Archive -Path "dist-release\tun2socks.zip" -DestinationPath "dist-release\tun2socks_extracted" -Force
+          Copy-Item -Path "dist-release\tun2socks_extracted\tun2socks-windows-amd64.exe" -Destination "dist-release\tun2socks.exe" -Force
+          Remove-Item -Recurse -Force "dist-release\tun2socks_extracted", "dist-release\tun2socks.zip"
+          Write-Host "Tun2socks.exe placed into release folder."
 
-      - name: Build UniTunnel Go Executable (Fyne GUI + Wintun)
+      - name: Install Wails v3 CLI
+        run: |
+          Write-Host "Installing Wails v3 CLI..."
+          go install github.com/wailsapp/wails/v3/cmd/wails3@latest
+
+      - name: Compile Windows Resource (Icon & UAC Manifest)
         working-directory: ./unitunnel-go
         run: |
-          # Enable CGO for Fyne OpenGL and Win32 bindings
-          $env:CGO_ENABLED="1"
-          
-          # Tidy dependencies
-          go mod tidy
-          
-          # Detect target package location (supports both ./cmd/unitunnel and root . structures)
-          $buildDir = "."
-          if (Test-Path "cmd\unitunnel\main.go") {
-            $buildDir = "cmd\unitunnel"
-          } elseif (Test-Path "main.go") {
-            $buildDir = "."
-          }
-          Write-Host "Target Go package detected: $buildDir"
-          
-          # Ensure Windows resource object (rsrc_windows_amd64.syso) embeds custom icon and manifest
           if (Get-Command windres -ErrorAction SilentlyContinue) {
-            if ($buildDir -ne "." -and (Test-Path "$buildDir\unitunnel.rc")) {
-              Write-Host "Compiling Windows resource object with windres in $buildDir..."
-              Push-Location $buildDir
-              windres -i unitunnel.rc -O coff -o rsrc_windows_amd64.syso
-              Pop-Location
-            } elseif (Test-Path "unitunnel.rc") {
-              Write-Host "Compiling Windows resource object with windres in current directory..."
+            if (Test-Path "unitunnel.rc") {
+              Write-Host "Compiling Windows resource object with windres..."
               windres -i unitunnel.rc -O coff -o rsrc_windows_amd64.syso
             }
           }
 
-          # Ensure output dist directory exists
-          if (!(Test-Path "..\dist")) {
-            New-Item -ItemType Directory -Force -Path "..\dist"
-          }
-
-          # Compile without opening background CMD console (-H windowsgui)
-          # Go automatically embeds rsrc_windows_amd64.syso located alongside main.go
-          # -s -w strips debug symbols for smaller binary size
-          Write-Host "Compiling Go binary..."
-          if ($buildDir -eq ".") {
-            go build -ldflags="-H windowsgui -s -w" -o ..\dist\unitunnel.exe .
-          } else {
-            go build -ldflags="-H windowsgui -s -w" -o ..\dist\unitunnel.exe .\$buildDir
-          }
-          
-          Write-Host "Build complete: dist\unitunnel.exe (with embedded custom icon and UAC manifest)"
-
-      - name: Prepare Release Distribution Package
+      - name: Build UniTunnel Go Executable (Wails v3)
+        working-directory: ./unitunnel-go
         run: |
-          # Copy default config file and assets (icon)
-          if (Test-Path "unitunnel-go\config.example.json") {
-            Copy-Item -Path "unitunnel-go\config.example.json" -Destination "dist\config.json" -Force
-          } elseif (Test-Path "config.example.json") {
-            Copy-Item -Path "config.example.json" -Destination "dist\config.json" -Force
-          }
-
-          if (Test-Path "unitunnel-go\assets") {
-            Copy-Item -Recurse -Path "unitunnel-go\assets" -Destination "dist\assets" -Force
-          } elseif (Test-Path "assets") {
-            Copy-Item -Recurse -Path "assets" -Destination "dist\assets" -Force
+          $env:CGO_ENABLED="1"
+          
+          # Ensure dist directory is accessible for embed FS
+          if (!(Test-Path "dist")) {
+            Copy-Item -Recurse -Path "..\dist" -Destination "dist" -Force
           }
           
+          go mod tidy
+          
+          Write-Host "Building Wails v3 executable..."
+          go build -ldflags="-H windowsgui -s -w" -o ..\dist-release\unitunnel.exe .
+          Write-Host "Build complete: dist-release\unitunnel.exe"
+
+      - name: Prepare Windows Distribution Package
+        run: |
+          # Copy example config
+          if (Test-Path "unitunnel-go\config.example.json") {
+            Copy-Item -Path "unitunnel-go\config.example.json" -Destination "dist-release\config.json" -Force
+          }
+          
+          # Copy icon if available
+          if (Test-Path "unitunnel-go\icon.ico") {
+            Copy-Item -Path "unitunnel-go\icon.ico" -Destination "dist-release\icon.ico" -Force
+          }
+
           # Create UAC requireAdministrator manifest
           @"
           <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -128,29 +109,36 @@ jobs:
               </security>
             </trustInfo>
           </assembly>
-          "@ | Out-File -FilePath "dist\unitunnel.exe.manifest" -Encoding utf8
+          "@ | Out-File -FilePath "dist-release\unitunnel.exe.manifest" -Encoding utf8
           
-          # Create a README for end users
+          # Create Spanish instruction manual
           @"
           =======================================================
-          UniTunnel - Acceso Universitario para Windows
+          UniTunnel (Wails v3) - Acceso Universitario para Windows
           =======================================================
           
           REQUISITOS:
           1. Ejecutar SIEMPRE 'unitunnel.exe' como Administrador (clic derecho -> Ejecutar como administrador).
-             Esto es indispensable para que Windows permita inicializar el adaptador virtual Wintun y las rutas IP.
-          2. Mantener 'wintun.dll' en la misma carpeta que 'unitunnel.exe'.
-          3. 'config.json' se crea o actualiza automaticamente con tus credenciales y servidor proxy (10.0.0.1:8080).
+             Es indispensable para que Windows permita inicializar el adaptador Wintun y las métricas de red.
+          2. Mantener 'wintun.dll' y 'tun2socks.exe' en la misma carpeta que 'unitunnel.exe'.
+          3. 'config.json' se crea o actualiza automáticamente con tus credenciales y servidor proxy (10.0.0.1:8080).
+             ¡Ahora puedes editar absolutamente todos los ajustes directamente desde la ventana del programa!
           
-          MODOS DISPONIBLES:
-          - Modo TUN Virtual: Captura 100% de apps (Git, Discord, Juegos, Terminal, Navegadores).
-          - Modo Proxy Sistema: Configura 127.0.0.1:1080 en la configuracion de red de Windows.
+          MODOS DE RED RÁPIDOS:
+          - Cable UCI: Activa UniTunnel y asigna prioridad métrica 10 a la interfaz Ethernet.
+          - Datos Móviles / Wi-Fi: Asigna prioridad métrica 10 a la interfaz Wi-Fi (y 100 a Ethernet),
+            permitiendo navegar con el punto de acceso del teléfono SIN tener que desconectar el cable de red.
+          - Directo: Restaura las métricas automáticas nativas de Windows.
+          
+          BANDEJA DEL SISTEMA:
+          - UniTunnel cuenta con menú en la bandeja del sistema (al lado del reloj) para cambiar de modo
+            de red con un solo clic, conectar/desconectar y consultar tu cuota de navegación.
           =======================================================
-          "@ | Out-File -FilePath "dist\LEEME.txt" -Encoding utf8
+          "@ | Out-File -FilePath "dist-release\LEEME.txt" -Encoding utf8
 
       - name: Upload Build Artifacts (ZIP)
         uses: actions/upload-artifact@v4
         with:
-          name: unitunnel-windows-x64
-          path: dist/
+          name: unitunnel-windows-wails3-x64
+          path: dist-release/
           retention-days: 30

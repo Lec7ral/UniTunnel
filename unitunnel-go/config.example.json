@@ -6,9 +6,9 @@
   "accounts": [
     {
       "id": "acc_1",
-      "name": "Cuenta Personal",
+      "name": "Cuenta Institucional",
       "username": "",
-      "domain": "",
+      "domain": "uci.cu",
       "password": ""
     }
   ],
@@ -24,9 +24,14 @@
     "172.16.0.0/12",
     "192.168.0.0/16"
   ],
+  "network_mode": "uci_cable",
+  "quota_url": "https://cuota.uci.cu/",
+  "auto_check_quota": true,
+  "quota_check_interval_min": 15,
   "vps_enabled": false,
   "vps_server": "",
   "vps_secret": "",
-  "start_minimized": true,
-  "auto_start": false
+  "start_minimized": false,
+  "auto_start": false,
+  "always_on_top": false
 }
