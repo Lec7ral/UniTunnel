@@ -16,7 +16,7 @@ import (
 )
 
 //go:embed all:dist
-var assets embed.FS
+var embeddedFrontendFS embed.FS
 
 func main() {
 	// 1. Silent UAC elevation check for Wintun driver and IP routing metrics
@@ -45,7 +45,7 @@ func main() {
 			application.NewService(appService),
 		},
 		Assets: application.AssetOptions{
-			Handler: application.AssetFileServerFS(assets),
+			Handler: application.AssetFileServerFS(embeddedFrontendFS),
 		},
 	})
 

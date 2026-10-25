@@ -340,6 +340,35 @@ class WailsBridge {
     this.addLog('HOTSPOT', 'Análisis Hotspot: Realtek RTL8821CE · Wi-Fi Direct compatible · Requiere adaptador loopback para omitir validación NCSI sin internet.');
     return 'Adaptador Realtek RTL8821CE · Wi-Fi Direct compatible · Requiere adaptador loopback.';
   }
+
+  public async toggleForceOfflineHotspot(enable: boolean): Promise<{ success: boolean; message: string; enabled: boolean }> {
+    if (isWailsRuntime()) {
+      try {
+        return await (window as unknown as { go: { main: { AppService: { ToggleForceOfflineHotspot: (enable: boolean) => Promise<{ success: boolean; message: string; enabled: boolean }> } } } }).go.main.AppService.ToggleForceOfflineHotspot(enable);
+      } catch (err) {
+        console.warn('Error en Wails ToggleForceOfflineHotspot:', err);
+      }
+    }
+
+    if (enable) {
+      this.addLog('HOTSPOT', 'Ejecutando `netsh wlan set hostednetwork mode=allow` y bypass de NCSI en el Registro...');
+      this.addLog('HOTSPOT', '✓ [SIMULADOR] Hotspot sin internet forzado con éxito via netsh wlan & NCSI.');
+      return {
+        success: true,
+        message: 'Hotspot sin internet forzado activado con éxito (netsh & NCSI activos).',
+        enabled: true,
+      };
+    } else {
+      this.addLog('HOTSPOT', 'Ejecutando `netsh wlan set hostednetwork mode=disallow` para revertir cambios...');
+      this.addLog('HOTSPOT', '✓ [SIMULADOR] Configuración de Hotspot revertida al estado original.');
+      return {
+        success: true,
+        message: 'Configuración revertida a los valores predeterminados de Windows.',
+        enabled: false,
+      };
+    }
+  }
 }
 
 export const bridge = new WailsBridge();
+

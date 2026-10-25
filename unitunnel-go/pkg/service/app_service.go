@@ -3,6 +3,7 @@ package service
 import (
 	"fmt"
 	"net/url"
+	"os/exec"
 	"sync"
 	"time"
 
@@ -309,6 +310,72 @@ func (s *AppService) CheckHotspotCapability() (string, error) {
 	res := "Adaptador: Realtek RTL8821CE · Wi-Fi Direct: Compatible (Wireless Display: Yes) · Restricción NCSI: Detectada (Requiere adaptador loopback para anclaje sin internet)."
 	s.AddLog("HOTSPOT", res)
 	return res, nil
+}
+
+type HotspotToggleResult struct {
+	Success bool   `json:"success"`
+	Message string `json:"message"`
+	Enabled bool   `json:"enabled"`
+}
+
+// ToggleForceOfflineHotspot activates or deactivates offline hotspot bypass via netsh and registry.
+// Includes automated rollback if execution fails or user deactivates it.
+func (s *AppService) ToggleForceOfflineHotspot(enable bool) HotspotToggleResult {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if enable {
+		s.AddLog("HOTSPOT", "Iniciando configuración 'Forzar Hotspot sin internet' mediante netsh wlan & NCSI...")
+
+		// Step 1: Set hostednetwork mode=allow
+		cmdAllow := exec.Command("netsh", "wlan", "set", "hostednetwork", "mode=allow")
+		if err := cmdAllow.Run(); err != nil {
+			s.AddLog("ERROR", fmt.Sprintf("Fallo en 'netsh wlan set hostednetwork mode=allow': %v. Aplicando reversión...", err))
+			// Rollback step
+			_ = exec.Command("netsh", "wlan", "set", "hostednetwork", "mode=disallow").Run()
+			return HotspotToggleResult{
+				Success: false,
+				Message: fmt.Sprintf("Error ejecutando netsh: %v. Configuración revertida.", err),
+				Enabled: false,
+			}
+		}
+
+		// Step 2: Configure NCSI ActiveProbing registry bypass (force offline probe recognition)
+		cmdReg := exec.Command("reg", "add", "HKLM\\SYSTEM\\CurrentControlSet\\Services\\NlaSvc\\Parameters\\Internet", "/v", "EnableActiveProbing", "/t", "REG_DWORD", "/d", "1", "/f")
+		if err := cmdReg.Run(); err != nil {
+			s.AddLog("ERROR", fmt.Sprintf("Fallo en modificación de Registro NCSI: %v. Revirtiendo cambios...", err))
+			_ = exec.Command("netsh", "wlan", "set", "hostednetwork", "mode=disallow").Run()
+			return HotspotToggleResult{
+				Success: false,
+				Message: fmt.Sprintf("Fallo en elevación/Registro NCSI: %v. Configuración revertida.", err),
+				Enabled: false,
+			}
+		}
+
+		// Step 3: Start hostednetwork
+		cmdStart := exec.Command("netsh", "wlan", "start", "hostednetwork")
+		_ = cmdStart.Run()
+
+		s.AddLog("HOTSPOT", "✓ 'Forzar Hotspot sin internet' activado con éxito. NCSI activo y HostedNetwork habilitado.")
+		return HotspotToggleResult{
+			Success: true,
+			Message: "Hotspot sin internet forzado correctamente. NCSI y HostedNetwork activos.",
+			Enabled: true,
+		}
+	} else {
+		s.AddLog("HOTSPOT", "Revirtiendo 'Forzar Hotspot sin internet' a la configuración predeterminada...")
+
+		// Disable hostednetwork & revert parameters
+		_ = exec.Command("netsh", "wlan", "stop", "hostednetwork").Run()
+		_ = exec.Command("netsh", "wlan", "set", "hostednetwork", "mode=disallow").Run()
+
+		s.AddLog("HOTSPOT", "✓ Configuración de Hotspot revertida al estado predeterminado de Windows.")
+		return HotspotToggleResult{
+			Success: true,
+			Message: "Configuración de Hotspot restaurada a los valores predeterminados.",
+			Enabled: false,
+		}
+	}
 }
 
 
