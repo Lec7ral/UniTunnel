@@ -54,13 +54,13 @@ func main() {
 		Height:        740,
 		MinWidth:      840,
 		MinHeight:     620,
-		Centered:      true,
 		URL:           "/",
 		BackgroundType: application.BackgroundTypeSolid,
 		Windows: application.WindowsWindow{
 			BackdropType: application.Mica,
 		},
 	})
+	win.Center()
 
 	// If StartMinimized is active, keep window hidden on startup
 	if cfg.StartMinimized {
@@ -75,7 +75,6 @@ func main() {
 	// 6. Build Windows System Tray with Network Modes & Quick Toggles
 	tray := app.NewSystemTray()
 	tray.SetLabel("UniTunnel")
-	tray.SetTooltip("UniTunnel - Acceso Universitario")
 
 	trayMenu := app.NewMenu()
 
@@ -136,7 +135,7 @@ func main() {
 		go func() {
 			info, err := appService.CheckQuota()
 			if err == nil && info != nil {
-				tray.SetTooltip(fmt.Sprintf("UniTunnel - Cuota: %.1f MB restantes", info.RemainingMB))
+				tray.SetLabel(fmt.Sprintf("UniTunnel (%.1f MB)", info.RemainingMB))
 			}
 		}()
 	})
@@ -183,11 +182,11 @@ func main() {
 			if connected {
 				statusItem.SetLabel("UniTunnel: Conectado")
 				connectItem.SetLabel("Desconectar")
-				tray.SetTooltip("UniTunnel: Conectado y Protegido")
+				tray.SetLabel("UniTunnel: Conectado")
 			} else {
 				statusItem.SetLabel(fmt.Sprintf("UniTunnel: %s", status))
 				connectItem.SetLabel("Conectar")
-				tray.SetTooltip("UniTunnel: Desconectado")
+				tray.SetLabel("UniTunnel: Desconectado")
 			}
 		},
 		func(mode string) {
