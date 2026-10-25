@@ -4,6 +4,7 @@ package elevation
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"unsafe"
@@ -39,12 +40,12 @@ func EnsureElevated() bool {
 		return false
 	}
 
-	cwd, _ := os.Getwd()
+	dir := filepath.Dir(exe)
 	args := strings.Join(append(os.Args[1:], "--elevated"), " ")
 
 	verbPtr, _ := syscall.UTF16PtrFromString("runas")
 	exePtr, _ := syscall.UTF16PtrFromString(exe)
-	cwdPtr, _ := syscall.UTF16PtrFromString(cwd)
+	dirPtr, _ := syscall.UTF16PtrFromString(dir)
 	argsPtr, _ := syscall.UTF16PtrFromString(args)
 
 	shell32 := syscall.NewLazyDLL("shell32.dll")
@@ -54,7 +55,7 @@ func EnsureElevated() bool {
 		uintptr(unsafe.Pointer(verbPtr)),
 		uintptr(unsafe.Pointer(exePtr)),
 		uintptr(unsafe.Pointer(argsPtr)),
-		uintptr(unsafe.Pointer(cwdPtr)),
+		uintptr(unsafe.Pointer(dirPtr)),
 		1, // SW_SHOWNORMAL
 	)
 

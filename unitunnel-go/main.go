@@ -3,6 +3,7 @@ package main
 import (
 	"embed"
 	"fmt"
+	"io/fs"
 	"log"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -37,7 +38,14 @@ func main() {
 		_ = network.ApplyNetworkMode(cfg.NetworkMode)
 	}
 
-	// 4. Create Wails v3 Application
+	// 4. Extract dist sub-filesystem so Wails serves index.html at root
+	assetsSubFS, err := fs.Sub(embeddedFrontendFS, "dist")
+	if err != nil {
+		log.Printf("Advertencia extrayendo sub-fs dist: %v", err)
+		assetsSubFS = embeddedFrontendFS
+	}
+
+	// Create Wails v3 Application
 	app := application.New(application.Options{
 		Name:        "UniTunnel",
 		Description: "UniTunnel - Acceso Universitario para Windows",
@@ -45,7 +53,7 @@ func main() {
 			application.NewService(appService),
 		},
 		Assets: application.AssetOptions{
-			Handler: application.AssetFileServerFS(embeddedFrontendFS),
+			Handler: application.AssetFileServerFS(assetsSubFS),
 		},
 	})
 
@@ -62,7 +70,7 @@ func main() {
 		URL:           "/",
 		BackgroundType: application.BackgroundTypeSolid,
 		Windows: application.WindowsWindow{
-			BackdropType: application.Mica,
+			BackdropType: application.Auto,
 		},
 	})
 	win.Center()
