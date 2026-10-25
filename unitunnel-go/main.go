@@ -134,11 +134,14 @@ func main() {
 
 	log.Println("[DEBUG] Step 8: Configuring System Tray...")
 	tray := app.NewSystemTray()
-	if len(assets.IconPNG) > 0 {
+	if len(assets.IconICO) > 0 {
+		tray.SetIcon(assets.IconICO)
+		log.Printf("[DEBUG] Embedded tray ICO icon set (%d bytes).", len(assets.IconICO))
+	} else if len(assets.IconPNG) > 0 {
 		tray.SetIcon(assets.IconPNG)
-		log.Printf("[DEBUG] Embedded tray icon set (%d bytes).", len(assets.IconPNG))
+		log.Printf("[DEBUG] Embedded tray PNG icon set (%d bytes).", len(assets.IconPNG))
 	} else {
-		log.Println("[WARN] Embedded assets.IconPNG is empty!")
+		log.Println("[WARN] Embedded tray icon assets are empty!")
 	}
 	tray.SetLabel("UniTunnel")
 
