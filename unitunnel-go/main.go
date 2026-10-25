@@ -6,7 +6,9 @@ import (
 	"log"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
+	"github.com/wailsapp/wails/v3/pkg/events"
 
+	"unitunnel/assets"
 	"unitunnel/pkg/config"
 	"unitunnel/pkg/elevation"
 	"unitunnel/pkg/network"
@@ -47,13 +49,16 @@ func main() {
 		},
 	})
 
-	// 5. Create Main Webview Window
+	// 5. Create Main Webview Window with mobile phone dimensions (380x680, fixed ratio)
 	win := app.NewWebviewWindowWithOptions(application.WebviewWindowOptions{
 		Title:         "UniTunnel - Acceso Universitario",
-		Width:         1040,
-		Height:        740,
-		MinWidth:      840,
-		MinHeight:     620,
+		Width:         380,
+		Height:        680,
+		MinWidth:      380,
+		MinHeight:     680,
+		MaxWidth:      380,
+		MaxHeight:     680,
+		DisableResize: true,
 		URL:           "/",
 		BackgroundType: application.BackgroundTypeSolid,
 		Windows: application.WindowsWindow{
@@ -61,6 +66,12 @@ func main() {
 		},
 	})
 	win.Center()
+
+	// Keep app running in background when close button is clicked, hiding to system tray
+	win.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
+		win.Hide()
+		e.Cancel()
+	})
 
 	// If StartMinimized is active, keep window hidden on startup
 	if cfg.StartMinimized {
@@ -74,6 +85,9 @@ func main() {
 
 	// 6. Build Windows System Tray with Network Modes & Quick Toggles
 	tray := app.NewSystemTray()
+	if len(assets.IconPNG) > 0 {
+		tray.SetIcon(assets.IconPNG)
+	}
 	tray.SetLabel("UniTunnel")
 
 	trayMenu := app.NewMenu()
