@@ -2,5 +2,5 @@
 
 package elevation
 
-func EnsureElevated() {}
+func EnsureElevated() bool { return true }
 func IsElevated() bool { return true }

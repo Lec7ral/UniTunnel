@@ -22,19 +22,25 @@ func IsElevated() bool {
 	return token.IsElevated()
 }
 
-// EnsureElevated checks if process is admin; if not, re-launches with "runas" UAC verb and exits
-func EnsureElevated() {
+// EnsureElevated checks if process is admin; if not, attempts elevation safely
+func EnsureElevated() bool {
 	if IsElevated() {
-		return
+		return true
+	}
+
+	for _, arg := range os.Args {
+		if arg == "--elevated" {
+			return false
+		}
 	}
 
 	exe, err := os.Executable()
 	if err != nil {
-		return
+		return false
 	}
 
 	cwd, _ := os.Getwd()
-	args := strings.Join(os.Args[1:], " ")
+	args := strings.Join(append(os.Args[1:], "--elevated"), " ")
 
 	verbPtr, _ := syscall.UTF16PtrFromString("runas")
 	exePtr, _ := syscall.UTF16PtrFromString(exe)
@@ -56,4 +62,5 @@ func EnsureElevated() {
 	if ret > 32 {
 		os.Exit(0)
 	}
+	return false
 }

@@ -318,14 +318,14 @@ type HotspotToggleResult struct {
 	Enabled bool   `json:"enabled"`
 }
 
-// ToggleForceOfflineHotspot activates or deactivates offline hotspot bypass via netsh and registry.
+// ToggleForceOfflineHotspot activates or deactivates offline hotspot bypass via netsh.
 // Includes automated rollback if execution fails or user deactivates it.
 func (s *AppService) ToggleForceOfflineHotspot(enable bool) HotspotToggleResult {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if enable {
-		s.AddLog("HOTSPOT", "Iniciando configuración 'Forzar Hotspot sin internet' mediante netsh wlan & NCSI...")
+		s.AddLog("HOTSPOT", "Iniciando configuración 'Forzar Hotspot sin internet' mediante netsh wlan...")
 
 		// Step 1: Set hostednetwork mode=allow
 		cmdAllow := exec.Command("netsh", "wlan", "set", "hostednetwork", "mode=allow")
@@ -340,26 +340,14 @@ func (s *AppService) ToggleForceOfflineHotspot(enable bool) HotspotToggleResult 
 			}
 		}
 
-		// Step 2: Configure NCSI ActiveProbing registry bypass (force offline probe recognition)
-		cmdReg := exec.Command("reg", "add", "HKLM\\SYSTEM\\CurrentControlSet\\Services\\NlaSvc\\Parameters\\Internet", "/v", "EnableActiveProbing", "/t", "REG_DWORD", "/d", "1", "/f")
-		if err := cmdReg.Run(); err != nil {
-			s.AddLog("ERROR", fmt.Sprintf("Fallo en modificación de Registro NCSI: %v. Revirtiendo cambios...", err))
-			_ = exec.Command("netsh", "wlan", "set", "hostednetwork", "mode=disallow").Run()
-			return HotspotToggleResult{
-				Success: false,
-				Message: fmt.Sprintf("Fallo en elevación/Registro NCSI: %v. Configuración revertida.", err),
-				Enabled: false,
-			}
-		}
-
-		// Step 3: Start hostednetwork
+		// Step 2: Start hostednetwork
 		cmdStart := exec.Command("netsh", "wlan", "start", "hostednetwork")
 		_ = cmdStart.Run()
 
-		s.AddLog("HOTSPOT", "✓ 'Forzar Hotspot sin internet' activado con éxito. NCSI activo y HostedNetwork habilitado.")
+		s.AddLog("HOTSPOT", "✓ 'Forzar Hotspot sin internet' activado con éxito. HostedNetwork habilitado.")
 		return HotspotToggleResult{
 			Success: true,
-			Message: "Hotspot sin internet forzado correctamente. NCSI y HostedNetwork activos.",
+			Message: "Hotspot sin internet forzado correctamente. HostedNetwork activo.",
 			Enabled: true,
 		}
 	} else {
