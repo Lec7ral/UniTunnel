@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"os"
+	"path/filepath"
+	"runtime/debug"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
@@ -12,6 +15,7 @@ import (
 	"unitunnel/assets"
 	"unitunnel/pkg/config"
 	"unitunnel/pkg/elevation"
+	"unitunnel/pkg/logger"
 	"unitunnel/pkg/network"
 	"unitunnel/pkg/service"
 )
@@ -20,32 +24,61 @@ import (
 var embeddedFrontendFS embed.FS
 
 func main() {
-	// 1. Silent UAC elevation check for Wintun driver and IP routing metrics
-	elevation.EnsureElevated()
+	// 0. Initialize persistent multi-path file logger immediately
+	logPath := logger.InitLogger()
+	defer logger.Flush()
 
-	// 2. Load configuration from config.json (or defaults)
+	// Global Panic Recovery Handler: captures stack trace to log file if runtime panics occur
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[FATAL PANIC DETECTED] Runtime error: %v\nStack Trace:\n%s", r, debug.Stack())
+			logger.Flush()
+
+			// Write panic details to a fatal panic file next to executable for user visibility
+			exe, err := os.Executable()
+			if err == nil {
+				crashFile := filepath.Join(filepath.Dir(exe), "unitunnel_fatal_crash.txt")
+				_ = os.WriteFile(crashFile, []byte(fmt.Sprintf("UniTunnel Crash Report\nTime: %s\nError: %v\n\nStack:\n%s", logPath, r, debug.Stack())), 0644)
+			}
+		}
+	}()
+
+	log.Println("[DEBUG] Step 1: Configuring WebView2 user data environment...")
+	setupWebView2Environment()
+
+	log.Println("[DEBUG] Step 2: Checking UAC elevation status...")
+	isElevated := elevation.EnsureElevated()
+	log.Printf("[DEBUG] Elevation result: IsElevated=%v", isElevated)
+
+	log.Println("[DEBUG] Step 3: Loading configuration...")
 	cfg, err := config.LoadConfig()
 	if err != nil {
-		log.Printf("Advertencia cargando config.json: %v", err)
+		log.Printf("[WARN] Error loading config.json, using defaults: %v", err)
 		cfg = config.DefaultConfig()
+	} else {
+		log.Printf("[DEBUG] Configuration loaded. ProxyHost=%s:%d, NetworkMode=%s", cfg.ProxyHost, cfg.ProxyPort, cfg.NetworkMode)
 	}
 
-	// 3. Initialize backend service with Wails v3 binding
+	log.Println("[DEBUG] Step 4: Initializing AppService backend...")
 	appService := service.NewAppService(cfg)
 
-	// Apply configured initial network mode
 	if cfg.NetworkMode != "" {
-		_ = network.ApplyNetworkMode(cfg.NetworkMode)
+		log.Printf("[DEBUG] Applying initial network mode: %s", cfg.NetworkMode)
+		if err := network.ApplyNetworkMode(cfg.NetworkMode); err != nil {
+			log.Printf("[WARN] Initial network mode apply warning: %v", err)
+		}
 	}
 
-	// 4. Extract dist sub-filesystem so Wails serves index.html at root
+	log.Println("[DEBUG] Step 5: Preparing embedded web frontend filesystem...")
 	assetsSubFS, err := fs.Sub(embeddedFrontendFS, "dist")
 	if err != nil {
-		log.Printf("Advertencia extrayendo sub-fs dist: %v", err)
+		log.Printf("[WARN] Error extracting sub-FS 'dist': %v. Falling back to root embeddedFS.", err)
 		assetsSubFS = embeddedFrontendFS
+	} else {
+		log.Println("[DEBUG] Successfully bound embedded 'dist' sub-filesystem.")
 	}
 
-	// Create Wails v3 Application
+	log.Println("[DEBUG] Step 6: Creating Wails v3 Application instance...")
 	app := application.New(application.Options{
 		Name:        "UniTunnel",
 		Description: "UniTunnel - Acceso Universitario para Windows",
@@ -56,57 +89,67 @@ func main() {
 			Handler: application.AssetFileServerFS(assetsSubFS),
 		},
 	})
+	log.Println("[DEBUG] Wails v3 Application instance created successfully.")
 
-	// 5. Create Main Webview Window with mobile phone dimensions (380x680, fixed ratio)
+	log.Println("[DEBUG] Step 7: Creating Main Webview Window (380x680 px)...")
 	win := app.NewWebviewWindowWithOptions(application.WebviewWindowOptions{
-		Title:         "UniTunnel - Acceso Universitario",
-		Width:         380,
-		Height:        680,
-		MinWidth:      380,
-		MinHeight:     680,
-		MaxWidth:      380,
-		MaxHeight:     680,
-		DisableResize: true,
-		URL:           "/",
+		Title:          "UniTunnel - Acceso Universitario",
+		Width:          380,
+		Height:         680,
+		MinWidth:       380,
+		MinHeight:      680,
+		MaxWidth:       380,
+		MaxHeight:      680,
+		DisableResize:  true,
+		URL:            "/",
 		BackgroundType: application.BackgroundTypeSolid,
 		Windows: application.WindowsWindow{
 			BackdropType: application.Auto,
 		},
 	})
-	win.Center()
 
-	// Keep app running in background when close button is clicked, hiding to system tray
+	if win != nil {
+		win.Center()
+		log.Println("[DEBUG] Webview Window initialized and centered successfully.")
+	} else {
+		log.Println("[ERROR] app.NewWebviewWindowWithOptions returned nil window!")
+	}
+
+	// Register close hook to hide window to system tray instead of exiting
 	win.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
+		log.Println("[DEBUG] Window closing event intercepted -> Hiding window to System Tray")
 		win.Hide()
 		e.Cancel()
 	})
 
-	// If StartMinimized is active, keep window hidden on startup
 	if cfg.StartMinimized {
+		log.Println("[DEBUG] StartMinimized flag active -> hiding window on startup.")
 		win.Hide()
 	}
 
-	// If AlwaysOnTop is active, keep window pinned on top of other applications
 	if cfg.AlwaysOnTop {
+		log.Println("[DEBUG] AlwaysOnTop flag active -> setting window always on top.")
 		win.SetAlwaysOnTop(true)
 	}
 
-	// 6. Build Windows System Tray with Network Modes & Quick Toggles
+	log.Println("[DEBUG] Step 8: Configuring System Tray...")
 	tray := app.NewSystemTray()
 	if len(assets.IconPNG) > 0 {
 		tray.SetIcon(assets.IconPNG)
+		log.Printf("[DEBUG] Embedded tray icon set (%d bytes).", len(assets.IconPNG))
+	} else {
+		log.Println("[WARN] Embedded assets.IconPNG is empty!")
 	}
 	tray.SetLabel("UniTunnel")
 
 	trayMenu := app.NewMenu()
 
-	// Status label
 	statusItem := trayMenu.Add("UniTunnel: Desconectado")
 	statusItem.SetEnabled(false)
 
 	trayMenu.AddSeparator()
 
-	// Submenu: Modos de Red (Network Profiles)
+	// Network Mode options
 	networkModeSubmenu := trayMenu.AddSubmenu("Modo de Red")
 
 	var uciCableItem *application.MenuItem
@@ -141,7 +184,6 @@ func main() {
 
 	trayMenu.AddSeparator()
 
-	// Connect / Disconnect quick toggle
 	connectItem := trayMenu.Add("Conectar")
 	connectItem.OnClick(func(ctx *application.Context) {
 		if appService.IsConnected() {
@@ -151,7 +193,6 @@ func main() {
 		}
 	})
 
-	// Check quota in background
 	quotaItem := trayMenu.Add("Consultar Cuota UCI")
 	quotaItem.OnClick(func(ctx *application.Context) {
 		go func() {
@@ -164,7 +205,6 @@ func main() {
 
 	trayMenu.AddSeparator()
 
-	// Always on Top quick toggle in Tray
 	alwaysOnTopItem := trayMenu.AddCheckbox("Fijar al frente (Siempre visible)", cfg.AlwaysOnTop)
 	alwaysOnTopItem.OnClick(func(ctx *application.Context) {
 		newVal := !appService.IsAlwaysOnTop()
@@ -173,13 +213,13 @@ func main() {
 
 	trayMenu.AddSeparator()
 
-	// Show / Hide main window
 	trayMenu.Add("Mostrar Ventana").OnClick(func(ctx *application.Context) {
 		win.Show()
 		win.Focus()
 	})
 
 	trayMenu.Add("Salir").OnClick(func(ctx *application.Context) {
+		log.Println("[DEBUG] Exit clicked from System Tray -> Stopping tunnel and quitting application.")
 		if appService.IsConnected() {
 			_ = appService.StopTunnel()
 		}
@@ -188,7 +228,6 @@ func main() {
 
 	tray.SetMenu(trayMenu)
 
-	// Tray icon left click toggles window
 	tray.OnClick(func() {
 		if win.IsVisible() {
 			win.Hide()
@@ -198,7 +237,6 @@ func main() {
 		}
 	})
 
-	// Hook service callbacks into Tray UI
 	appService.SetCallbacks(
 		func(connected bool, status string) {
 			if connected {
@@ -222,8 +260,33 @@ func main() {
 		},
 	)
 
-	// 7. Run Wails v3 event loop
+	log.Println("[DEBUG] Step 9: Starting Wails v3 main event loop (app.Run)...")
+	logger.Flush()
+
 	if err := app.Run(); err != nil {
-		log.Fatalf("Error ejecutando UniTunnel Wails v3: %v", err)
+		log.Printf("[FATAL ERROR] UniTunnel Wails v3 app.Run() returned error: %v", err)
+	} else {
+		log.Println("[DEBUG] UniTunnel application event loop finished normally.")
+	}
+}
+
+// setupWebView2Environment sets a custom, writeable WebView2 User Data Directory on Windows.
+// This prevents WebView2 initialization crashes when running as Administrator or in read-only folders.
+func setupWebView2Environment() {
+	if os.Getenv("WEBVIEW2_USER_DATA_FOLDER") == "" {
+		localAppData := os.Getenv("LOCALAPPDATA")
+		if localAppData == "" {
+			localAppData = os.Getenv("TEMP")
+		}
+		if localAppData != "" {
+			userDataDir := filepath.Join(localAppData, "UniTunnel", "WebView2Data")
+			_ = os.MkdirAll(userDataDir, 0755)
+			_ = os.Setenv("WEBVIEW2_USER_DATA_FOLDER", userDataDir)
+			log.Printf("[DEBUG] Configured WEBVIEW2_USER_DATA_FOLDER environment variable: %s", userDataDir)
+		} else {
+			log.Println("[WARN] Neither LOCALAPPDATA nor TEMP environment variables found!")
+		}
+	} else {
+		log.Printf("[DEBUG] Existing WEBVIEW2_USER_DATA_FOLDER: %s", os.Getenv("WEBVIEW2_USER_DATA_FOLDER"))
 	}
 }
