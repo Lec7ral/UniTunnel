@@ -12,7 +12,6 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
 
-	"unitunnel/assets"
 	"unitunnel/pkg/config"
 	"unitunnel/pkg/elevation"
 	"unitunnel/pkg/logger"
@@ -132,17 +131,8 @@ func main() {
 		win.SetAlwaysOnTop(true)
 	}
 
-	log.Println("[DEBUG] Step 8: Configuring System Tray...")
+	log.Println("[DEBUG] Step 8: Configuring Windows System Tray (native embedded executable icon)...")
 	tray := app.NewSystemTray()
-	if len(assets.IconICO) > 0 {
-		tray.SetIcon(assets.IconICO)
-		log.Printf("[DEBUG] Embedded tray ICO icon set (%d bytes).", len(assets.IconICO))
-	} else if len(assets.IconPNG) > 0 {
-		tray.SetIcon(assets.IconPNG)
-		log.Printf("[DEBUG] Embedded tray PNG icon set (%d bytes).", len(assets.IconPNG))
-	} else {
-		log.Println("[WARN] Embedded tray icon assets are empty!")
-	}
 	tray.SetLabel("UniTunnel")
 
 	trayMenu := app.NewMenu()
