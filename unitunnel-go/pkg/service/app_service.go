@@ -2,7 +2,9 @@ package service
 
 import (
 	"fmt"
+	"net"
 	"net/url"
+	"strconv"
 	"sync"
 	"time"
 
@@ -10,17 +12,30 @@ import (
 	"unitunnel/pkg/network"
 	"unitunnel/pkg/quota"
 	"unitunnel/pkg/sysproxy"
-	"unitunnel/pkg/tunnel"
+	"unitunnel/pkg/traffic"
+	"unitunnel/pkg/tun"
 )
 
+type TrafficStats struct {
+	Connected bool    `json:"connected"`
+	SpeedMBs  float64 `json:"speed_mbs"`
+	ReadMB    float64 `json:"read_mb"`
+	WriteMB   float64 `json:"write_mb"`
+	TotalMB   float64 `json:"total_mb"`
+	PingMS    int64   `json:"ping_ms"`
+}
+
 type AppService struct {
-	mu           sync.Mutex
-	cfg          *config.Config
-	tunnelEngine *tunnel.Engine
-	connected    bool
-	connecting   bool
-	logs         []string
-	maxLogs      int
+	mu                  sync.Mutex
+	cfg                 *config.Config
+	tunEngine           *tun.Engine
+	connected           bool
+	connecting          bool
+	logs                []string
+	maxLogs             int
+	lastTrafficTime     time.Time
+	lastTotalBytes      float64
+	lastSpeedMBs        float64
 	onStatusChange      func(connected bool, status string)
 	onNetworkModeChange func(mode string)
 	onAlwaysOnTopChange func(pinned bool)
@@ -103,7 +118,6 @@ func (s *AppService) SetNetworkMode(mode string) error {
 	case string(network.ModeUCICable):
 		s.AddLog("RED", "✓ Modo Cable UCI: Prioridad métrica 10 asignada a Ethernet. Tráfico universitario activo.")
 	case string(network.ModeWiFiMobile):
-		// When switching to mobile data, we deactivate system proxy and stop tunnel to ensure direct path
 		_ = sysproxy.DisableSystemProxy()
 		if s.connected {
 			_ = s.StopTunnel()
@@ -147,9 +161,14 @@ func (s *AppService) StartTunnel() error {
 	acc := cfg.GetActiveAccount()
 	s.AddLog("AUTH", fmt.Sprintf("Autenticando usuario '%s' (Dominio: '%s')...", acc.Username, acc.Domain))
 
-	engine := tunnel.NewEngine(cfg)
+	engine := tun.NewEngine(cfg, func(msg string) {
+		s.AddLog("TÚNEL", msg)
+	}, func(err error) {
+		s.AddLog("ERROR", fmt.Sprintf("Error autenticación: %v", err))
+	})
+
 	s.mu.Lock()
-	s.tunnelEngine = engine
+	s.tunEngine = engine
 	s.mu.Unlock()
 
 	err := engine.Start()
@@ -157,6 +176,7 @@ func (s *AppService) StartTunnel() error {
 		s.mu.Lock()
 		s.connecting = false
 		s.connected = false
+		s.tunEngine = nil
 		s.mu.Unlock()
 		s.AddLog("ERROR", fmt.Sprintf("Error iniciando túnel: %v", err))
 		if s.onStatusChange != nil {
@@ -173,6 +193,10 @@ func (s *AppService) StartTunnel() error {
 	s.mu.Lock()
 	s.connecting = false
 	s.connected = true
+	s.lastTrafficTime = time.Now()
+	r, w, _ := traffic.GetTotals()
+	s.lastTotalBytes = (r + w) * 1024 * 1024
+	s.lastSpeedMBs = 0
 	s.mu.Unlock()
 
 	s.AddLog("TÚNEL", fmt.Sprintf("✓ Túnel activo. SOCKS5 en 127.0.0.1:%d · HTTP en 127.0.0.1:%d", cfg.LocalSocksPort, cfg.LocalHTTPPort))
@@ -198,7 +222,7 @@ func (s *AppService) StopTunnel() error {
 		s.mu.Unlock()
 		return nil
 	}
-	engine := s.tunnelEngine
+	engine := s.tunEngine
 	s.mu.Unlock()
 
 	s.AddLog("TÚNEL", "Deteniendo túnel y restaurando configuraciones...")
@@ -211,7 +235,8 @@ func (s *AppService) StopTunnel() error {
 	s.mu.Lock()
 	s.connected = false
 	s.connecting = false
-	s.tunnelEngine = nil
+	s.tunEngine = nil
+	s.lastSpeedMBs = 0
 	s.mu.Unlock()
 
 	s.AddLog("TÚNEL", "✓ Desconectado. Proxy de sistema deshabilitado.")
@@ -226,6 +251,61 @@ func (s *AppService) IsConnected() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.connected
+}
+
+// GetTrafficStats returns real-time bytes read/written, speed in MB/s, and proxy ping
+func (s *AppService) GetTrafficStats() TrafficStats {
+	s.mu.Lock()
+	conn := s.connected
+	cfg := s.cfg
+	s.mu.Unlock()
+
+	r, w, tot := traffic.GetTotals()
+	ping := int64(0)
+	speed := float64(0)
+
+	if conn && cfg != nil {
+		start := time.Now()
+		targetAddr := net.JoinHostPort(cfg.ProxyHost, strconv.Itoa(cfg.ProxyPort))
+		c, err := net.DialTimeout("tcp", targetAddr, 1000*time.Millisecond)
+		if err == nil {
+			ping = time.Since(start).Milliseconds()
+			traffic.SetPing(ping)
+			c.Close()
+		} else {
+			ping = traffic.GetPing()
+		}
+
+		s.mu.Lock()
+		now := time.Now()
+		if !s.lastTrafficTime.IsZero() {
+			dt := now.Sub(s.lastTrafficTime).Seconds()
+			if dt >= 0.8 {
+				totalBytes := (r + w) * 1024 * 1024
+				deltaBytes := totalBytes - s.lastTotalBytes
+				if deltaBytes < 0 {
+					deltaBytes = 0
+				}
+				s.lastSpeedMBs = (deltaBytes / (1024 * 1024)) / dt
+				s.lastTotalBytes = totalBytes
+				s.lastTrafficTime = now
+			}
+		} else {
+			s.lastTrafficTime = now
+			s.lastTotalBytes = (r + w) * 1024 * 1024
+		}
+		speed = s.lastSpeedMBs
+		s.mu.Unlock()
+	}
+
+	return TrafficStats{
+		Connected: conn,
+		SpeedMBs:  speed,
+		ReadMB:    r,
+		WriteMB:   w,
+		TotalMB:   tot,
+		PingMS:    ping,
+	}
 }
 
 // CheckQuota queries cuota.uci.cu using the active account credentials
@@ -302,6 +382,3 @@ func (s *AppService) IsAlwaysOnTop() bool {
 	defer s.mu.Unlock()
 	return s.cfg.AlwaysOnTop
 }
-
-
-

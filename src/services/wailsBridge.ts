@@ -1,4 +1,4 @@
-// Bridge to Wails v3 Go runtime with seamless browser fallback
+// Bridge to Wails v3 Go runtime with direct backend invocation and zero random/mock data
 
 export interface UserAccount {
   id: string;
@@ -51,6 +51,15 @@ export interface QuotaInfo {
   error_message?: string;
 }
 
+export interface TrafficStats {
+  connected: boolean;
+  speed_mbs: number;
+  read_mb: number;
+  write_mb: number;
+  total_mb: number;
+  ping_ms: number;
+}
+
 export interface InterfaceStatus {
   alias: string;
   if_index: number;
@@ -74,7 +83,7 @@ export const defaultConfig: AppConfig = {
       name: 'Cuenta Institucional',
       username: 'yoanbrp',
       domain: 'uci.cu',
-      password: '••••••••••••',
+      password: '',
     },
   ],
   local_socks_port: 1080,
@@ -116,20 +125,29 @@ async function callWailsService<T>(methodName: string, ...args: unknown[]): Prom
     return await goService[methodName](...args);
   }
 
-  // Pattern 3: window.wails.CallService('AppService', methodName, ...args)
+  // Pattern 3: window.wails.CallService (Wails v3 standard)
   const wailsObj = win.wails as { CallService?: (s: string, m: string, ...a: unknown[]) => Promise<T>; Call?: (name: string, ...a: unknown[]) => Promise<T> };
   if (wailsObj && typeof wailsObj.CallService === 'function') {
-    try {
-      return await wailsObj.CallService('AppService', methodName, ...args);
-    } catch {
-      // try service package prefix
-      return await wailsObj.CallService('service.AppService', methodName, ...args);
+    const serviceNames = ['service.AppService', 'AppService', 'main.AppService', 'service/AppService'];
+    for (const sName of serviceNames) {
+      try {
+        return await wailsObj.CallService(sName, methodName, ...args);
+      } catch (e: unknown) {
+        const msg = String(e);
+        if (!msg.includes('not found') && !msg.includes('unknown service')) {
+          throw e;
+        }
+      }
     }
   }
 
-  // Pattern 4: window.wails.Call('AppService.' + methodName, ...args)
+  // Pattern 4: window.wails.Call
   if (wailsObj && typeof wailsObj.Call === 'function') {
-    return await wailsObj.Call(`AppService.${methodName}`, ...args);
+    try {
+      return await wailsObj.Call(`service.AppService.${methodName}`, ...args);
+    } catch {
+      return await wailsObj.Call(`AppService.${methodName}`, ...args);
+    }
   }
 
   // Pattern 5: window.AppService[methodName]
@@ -138,7 +156,7 @@ async function callWailsService<T>(methodName: string, ...args: unknown[]): Prom
     return await directService[methodName](...args);
   }
 
-  throw new Error(`Wails AppService.${methodName} not found on window`);
+  throw new Error(`Wails AppService.${methodName} not available in runtime`);
 }
 
 export function isWailsRuntime(): boolean {
@@ -159,7 +177,6 @@ class WailsBridge {
   private configCache: AppConfig | null = null;
   private logListeners: ((logs: string[]) => void)[] = [];
   private currentLogs: string[] = [];
-  private simulatedConnected = false;
 
   constructor() {
     this.initLogs();
@@ -174,7 +191,6 @@ class WailsBridge {
         } else {
           this.currentLogs = [
             `[${new Date().toLocaleTimeString()}] [SISTEMA] UniTunnel Wails v3 inicializado en Windows x64.`,
-            `[${new Date().toLocaleTimeString()}] [RED] Modo inicial: Cable UCI (Ethernet métrica 10, Wi-Fi métrica 100).`,
           ];
         }
       } catch {
@@ -191,7 +207,7 @@ class WailsBridge {
       try {
         localStorage.setItem(STORAGE_KEY_LOGS, JSON.stringify(this.currentLogs));
       } catch {
-        // quota exceeded or ignore
+        // ignore
       }
     }
     this.logListeners.forEach((listener) => listener(this.currentLogs));
@@ -206,28 +222,24 @@ class WailsBridge {
   }
 
   public async fetchLogs(): Promise<string[]> {
-    if (isWailsRuntime()) {
-      try {
-        const backendLogs = await callWailsService<string[]>('GetLogs');
-        if (Array.isArray(backendLogs) && backendLogs.length > 0) {
-          this.currentLogs = backendLogs;
-          this.logListeners.forEach((listener) => listener(this.currentLogs));
-          return backendLogs;
-        }
-      } catch (err) {
-        console.debug('GetLogs fallback:', err);
+    try {
+      const backendLogs = await callWailsService<string[]>('GetLogs');
+      if (Array.isArray(backendLogs) && backendLogs.length > 0) {
+        this.currentLogs = backendLogs;
+        this.logListeners.forEach((listener) => listener(this.currentLogs));
+        return backendLogs;
       }
+    } catch {
+      // not in wails runtime or call error
     }
     return this.currentLogs;
   }
 
   public async clearLogs(): Promise<void> {
-    if (isWailsRuntime()) {
-      try {
-        await callWailsService<void>('ClearLogs');
-      } catch (err) {
-        console.debug('ClearLogs fallback:', err);
-      }
+    try {
+      await callWailsService<void>('ClearLogs');
+    } catch {
+      // ignore
     }
     this.currentLogs = [
       `[${new Date().toLocaleTimeString()}] [SISTEMA] Registro limpiado.`,
@@ -239,16 +251,14 @@ class WailsBridge {
   }
 
   public async getConfig(): Promise<AppConfig> {
-    if (isWailsRuntime()) {
-      try {
-        const remote = await callWailsService<AppConfig>('GetConfig');
-        if (remote && remote.proxy_host) {
-          this.configCache = remote;
-          return remote;
-        }
-      } catch (err) {
-        console.warn('Fallo llamada Wails GetConfig, usando caché local:', err);
+    try {
+      const remote = await callWailsService<AppConfig>('GetConfig');
+      if (remote && remote.proxy_host) {
+        this.configCache = remote;
+        return remote;
       }
+    } catch {
+      // fallback to stored local cache
     }
 
     if (this.configCache) return this.configCache;
@@ -271,69 +281,71 @@ class WailsBridge {
       localStorage.setItem(STORAGE_KEY_CONFIG, JSON.stringify(cfg));
     }
 
-    if (isWailsRuntime()) {
-      try {
-        await callWailsService<void>('SaveConfig', cfg);
-        this.addLog('CONFIG', 'Ajustes guardados correctamente en config.json.');
-        return true;
-      } catch (err) {
+    try {
+      await callWailsService<void>('SaveConfig', cfg);
+      this.addLog('CONFIG', 'Ajustes guardados correctamente en config.json.');
+      return true;
+    } catch (err) {
+      if (isWailsRuntime()) {
         this.addLog('ERROR', `Error guardando en backend Go: ${err}`);
         return false;
       }
+      this.addLog('CONFIG', 'Ajustes actualizados en config.json.');
+      return true;
     }
-
-    this.addLog('CONFIG', 'Ajustes actualizados en config.json.');
-    return true;
   }
 
   public async startTunnel(): Promise<{ success: boolean; error?: string }> {
-    if (isWailsRuntime()) {
-      try {
-        this.addLog('TÚNEL', 'Solicitando inicio del túnel al backend Go (NTLMv2 / Wintun)...');
-        await callWailsService<void>('StartTunnel');
-        await this.fetchLogs();
-        return { success: true };
-      } catch (err: unknown) {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        this.addLog('ERROR', `Fallo iniciando túnel: ${errMsg}`);
-        return { success: false, error: errMsg };
-      }
+    try {
+      this.addLog('TÚNEL', 'Solicitando inicio del túnel al backend Go (NTLMv2 / Wintun)...');
+      await callWailsService<void>('StartTunnel');
+      await this.fetchLogs();
+      return { success: true };
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      this.addLog('ERROR', `Fallo iniciando túnel: ${errMsg}`);
+      return { success: false, error: errMsg };
     }
-
-    // Browser development simulation
-    this.simulatedConnected = true;
-    this.addLog('TÚNEL', 'Iniciando conexión con 10.0.0.1:8080 (Modo: tun)...');
-    this.addLog('AUTH', 'Autenticación NTLMv2 aceptada por Squid (pxuci). Dominio NetBIOS: UCI');
-    this.addLog('TÚNEL', '✓ Túnel activo. SOCKS5 en 127.0.0.1:1080 · HTTP en 127.0.0.1:8081');
-    return { success: true };
   }
 
   public async stopTunnel(): Promise<{ success: boolean }> {
-    if (isWailsRuntime()) {
-      try {
-        this.addLog('TÚNEL', 'Deteniendo túnel y restaurando configuraciones...');
-        await callWailsService<void>('StopTunnel');
-        await this.fetchLogs();
-        return { success: true };
-      } catch (err) {
-        console.warn('Error llamando a StopTunnel en Go:', err);
-      }
+    try {
+      this.addLog('TÚNEL', 'Deteniendo túnel y restaurando configuraciones...');
+      await callWailsService<void>('StopTunnel');
+      await this.fetchLogs();
+      return { success: true };
+    } catch (err) {
+      console.warn('Error llamando a StopTunnel:', err);
     }
-
-    this.simulatedConnected = false;
-    this.addLog('TÚNEL', '✓ Desconectado. Proxy de sistema deshabilitado.');
+    this.addLog('TÚNEL', '✓ Desconectado.');
     return { success: true };
   }
 
   public async isConnected(): Promise<boolean> {
-    if (isWailsRuntime()) {
-      try {
-        return await callWailsService<boolean>('IsConnected');
-      } catch {
-        // fallback
-      }
+    try {
+      return await callWailsService<boolean>('IsConnected');
+    } catch {
+      return false;
     }
-    return this.simulatedConnected;
+  }
+
+  public async getTrafficStats(): Promise<TrafficStats> {
+    try {
+      const stats = await callWailsService<TrafficStats>('GetTrafficStats');
+      if (stats) {
+        return stats;
+      }
+    } catch {
+      // ignore
+    }
+    return {
+      connected: false,
+      speed_mbs: 0,
+      read_mb: 0,
+      write_mb: 0,
+      total_mb: 0,
+      ping_ms: 0,
+    };
   }
 
   public async applyNetworkMode(mode: NetworkMode): Promise<boolean> {
@@ -341,25 +353,14 @@ class WailsBridge {
     cfg.network_mode = mode;
     await this.saveConfig(cfg);
 
-    if (isWailsRuntime()) {
-      try {
-        await callWailsService<void>('SetNetworkMode', mode);
-        await this.fetchLogs();
-        return true;
-      } catch (err) {
-        this.addLog('ERROR', `Error aplicando modo de red en Windows: ${err}`);
-        return false;
-      }
+    try {
+      await callWailsService<void>('SetNetworkMode', mode);
+      await this.fetchLogs();
+      return true;
+    } catch (err) {
+      this.addLog('ERROR', `Error aplicando modo de red en Windows: ${err}`);
+      return false;
     }
-
-    if (mode === 'uci_cable') {
-      this.addLog('RED', '✓ Modo Cable UCI: Prioridad métrica 10 asignada a Ethernet (Wi-Fi 100).');
-    } else if (mode === 'wifi_mobile') {
-      this.addLog('RED', '✓ Modo Wi-Fi / Datos Móviles: Prioridad métrica 10 asignada a Wi-Fi (Ethernet 100).');
-    } else {
-      this.addLog('RED', '✓ Modo Directo: Métricas automáticas restauradas en Windows.');
-    }
-    return true;
   }
 
   public async setAlwaysOnTop(pinned: boolean): Promise<boolean> {
@@ -367,97 +368,59 @@ class WailsBridge {
     cfg.always_on_top = pinned;
     await this.saveConfig(cfg);
 
-    if (isWailsRuntime()) {
-      try {
-        await callWailsService<void>('SetAlwaysOnTop', pinned);
-        return true;
-      } catch (err) {
-        console.warn('Error llamando a SetAlwaysOnTop en Wails:', err);
-      }
+    try {
+      await callWailsService<void>('SetAlwaysOnTop', pinned);
+      return true;
+    } catch (err) {
+      console.warn('Error llamando a SetAlwaysOnTop en Wails:', err);
     }
 
     if (pinned) {
       this.addLog('SISTEMA', 'Ventana fijada al frente (Siempre visible sobre otras apps).');
     } else {
-      this.addLog('SISTEMA', 'Ventana liberada (Comportamiento de profundidad estándar).');
+      this.addLog('SISTEMA', 'Ventana liberada (Comportamiento estándar).');
     }
     return true;
   }
 
   public async getInterfaces(): Promise<InterfaceStatus[]> {
-    if (isWailsRuntime()) {
-      try {
-        const list = await callWailsService<InterfaceStatus[]>('GetInterfaces');
-        if (Array.isArray(list) && list.length > 0) {
-          return list;
-        }
-      } catch (err) {
-        console.warn('Error obteniendo interfaces de Go:', err);
+    try {
+      const list = await callWailsService<InterfaceStatus[]>('GetInterfaces');
+      if (Array.isArray(list)) {
+        return list;
       }
+    } catch (err) {
+      console.warn('Error obteniendo interfaces de Go:', err);
     }
-
-    const cfg = await this.getConfig();
-    if (cfg.network_mode === 'wifi_mobile') {
-      return [
-        { alias: 'Wi-Fi (Punto de acceso móvil)', if_index: 12, metric: 10, auto_metric: false, status: 'Connected', media_type: 'wifi' },
-        { alias: 'Ethernet (Cable UCI)', if_index: 8, metric: 100, auto_metric: false, status: 'Connected', media_type: 'ethernet' },
-      ];
-    } else if (cfg.network_mode === 'uci_cable') {
-      return [
-        { alias: 'Ethernet (Cable UCI)', if_index: 8, metric: 10, auto_metric: false, status: 'Connected', media_type: 'ethernet' },
-        { alias: 'Wi-Fi (Inalámbrica)', if_index: 12, metric: 100, auto_metric: false, status: 'Connected', media_type: 'wifi' },
-      ];
-    }
-    return [
-      { alias: 'Ethernet (Cable UCI)', if_index: 8, metric: 25, auto_metric: true, status: 'Connected', media_type: 'ethernet' },
-      { alias: 'Wi-Fi (Inalámbrica)', if_index: 12, metric: 35, auto_metric: true, status: 'Connected', media_type: 'wifi' },
-    ];
+    return [];
   }
 
   public async fetchQuota(account?: UserAccount): Promise<QuotaInfo> {
-    if (isWailsRuntime()) {
-      try {
-        const realQuota = await callWailsService<QuotaInfo>('CheckQuota');
-        if (realQuota && realQuota.allocated_mb > 0) {
-          await this.fetchLogs();
-          return realQuota;
-        }
-      } catch (err) {
-        console.warn('Error en Wails CheckQuota:', err);
+    try {
+      const realQuota = await callWailsService<QuotaInfo>('CheckQuota');
+      if (realQuota && (realQuota.allocated_mb > 0 || realQuota.remaining_mb > 0 || realQuota.error_message)) {
+        await this.fetchLogs();
+        return realQuota;
       }
+    } catch (err) {
+      console.warn('Error en CheckQuota Go:', err);
     }
 
-    // Fallback simulation matching cuota.uci.cu
-    const user = account?.username || 'yoanbrp';
-    const total = 500;
-    const used = +(340 + Math.random() * 80).toFixed(1);
-    const isOverdraft = used > total;
-    const overdraftMb = isOverdraft ? +(used - total).toFixed(1) : 0;
-    const remaining = isOverdraft ? -overdraftMb : +(total - used).toFixed(1);
-    const percent = +((used / total) * 100).toFixed(1);
-    const clamped = Math.min(100, Math.max(0, percent));
-
-    const result: QuotaInfo = {
+    const user = account?.username || '';
+    return {
       username: user,
-      allocated_mb: total,
-      used_mb: used,
-      remaining_mb: remaining,
-      percent_used: percent,
-      clamped_percent: clamped,
-      is_overdraft: isOverdraft,
-      overdraft_mb: overdraftMb,
-      status_level: isOverdraft ? 'overdraft' : percent > 90 ? 'critical' : percent > 70 ? 'warning' : 'normal',
-      last_updated: new Date().toLocaleTimeString(),
-      success: true,
+      allocated_mb: 0,
+      used_mb: 0,
+      remaining_mb: 0,
+      percent_used: 0,
+      clamped_percent: 0,
+      is_overdraft: false,
+      overdraft_mb: 0,
+      status_level: 'normal',
+      last_updated: 'Sin conexión',
+      success: false,
+      error_message: 'No se pudo contactar con cuota.uci.cu (Verifica la conexión al proxy)',
     };
-
-    if (isOverdraft) {
-      this.addLog('CUOTA', `ℹ Saldo cuota: Sobregiro +${overdraftMb} MB (${used} MB de ${total} MB · ${percent}% - Sobregiro permitido).`);
-    } else {
-      this.addLog('CUOTA', `✓ Saldo cuota: ${remaining} MB restantes de ${total} MB (${percent}% consumido).`);
-    }
-
-    return result;
   }
 }
 

@@ -42,23 +42,23 @@ export default function App() {
   // Connection & Tunnel state
   const [connected, setConnected] = useState(false);
   const [connecting, setConnecting] = useState(false);
-  const [pingMs, setPingMs] = useState(38);
-  const [speedMBs, setSpeedMBs] = useState(2.6);
-  const [speedHistory, setSpeedHistory] = useState<number[]>([1.2, 1.8, 2.4, 2.6, 2.9, 2.7, 2.6]);
+  const [pingMs, setPingMs] = useState(0);
+  const [speedMBs, setSpeedMBs] = useState(0);
+  const [speedHistory, setSpeedHistory] = useState<number[]>([0, 0, 0, 0, 0, 0, 0]);
 
   // Quota state
   const [quota, setQuota] = useState<QuotaInfo>({
-    username: 'yoanbrp',
-    allocated_mb: 500,
-    used_mb: 362.4,
-    remaining_mb: 137.6,
-    percent_used: 72.5,
-    clamped_percent: 72.5,
+    username: '',
+    allocated_mb: 0,
+    used_mb: 0,
+    remaining_mb: 0,
+    percent_used: 0,
+    clamped_percent: 0,
     is_overdraft: false,
     overdraft_mb: 0,
     status_level: 'normal',
-    last_updated: 'Hace 2 min',
-    success: true,
+    last_updated: 'Sin consultar',
+    success: false,
   });
   const [quotaLoading, setQuotaLoading] = useState(false);
 
@@ -111,18 +111,21 @@ export default function App() {
     };
   }, []);
 
-  // Periodic simulated speed tick when connected
+  // Periodic real traffic stats & ping measurement from Go backend
   useEffect(() => {
-    if (!connected) return;
-    const interval = setInterval(() => {
-      const nextSpeed = +(Math.random() * 2 + 1.8).toFixed(2);
-      const nextPing = Math.floor(Math.random() * 15 + 32);
-      setSpeedMBs(nextSpeed);
-      setPingMs(nextPing);
-      setSpeedHistory((prev) => [...prev.slice(-12), nextSpeed]);
+    const interval = setInterval(async () => {
+      try {
+        const stats = await bridge.getTrafficStats();
+        setConnected(stats.connected);
+        setSpeedMBs(stats.speed_mbs);
+        setPingMs(Number(stats.ping_ms));
+        setSpeedHistory((prev) => [...prev.slice(-12), stats.speed_mbs]);
+      } catch {
+        // ignore
+      }
     }, 1500);
     return () => clearInterval(interval);
-  }, [connected]);
+  }, []);
 
   const activeAccount =
     config.accounts.find((a) => a.id === config.active_account_id) ||
@@ -222,40 +225,47 @@ export default function App() {
     }
   };
 
-  const runDiagnostics = (simulateFail: boolean) => {
+  const runDiagnostics = async () => {
     setDiagRunning(true);
     setDiagStep(1);
     setDiagResult(null);
 
-    setTimeout(() => {
+    try {
       setDiagStep(2);
-      setTimeout(() => {
-        setDiagStep(3);
-        setTimeout(() => {
-          setDiagStep(4);
-          setDiagRunning(false);
-          if (simulateFail) {
-            setDiagResult({
-              success: false,
-              server: 'squid/4.17 (pxuci.uci.cu)',
-              scheme: 'NTLMv2 (AD UCI)',
-              bodyDrained: 3526,
-              details:
-                'Credenciales rechazadas (407). El mecanismo Anti-Bloqueo de UniTunnel detuvo los reintentos automáticos para no bloquear tu cuenta institucional.',
-            });
-          } else {
-            setDiagResult({
-              success: true,
-              server: 'squid/4.17 (pxuci.uci.cu)',
-              scheme: 'NTLMv2 (AD UCI)',
-              bodyDrained: 3526,
-              details:
-                'Negociación NTLMv2 exitosa. Socket TCP sincronizado, cuerpo HTML 407 descartado y túnel CONNECT autorizado.',
-            });
-          }
-        }, 600);
-      }, 600);
-    }, 600);
+      const isConn = await bridge.isConnected();
+      setDiagStep(3);
+      const q = await bridge.fetchQuota(activeAccount);
+      setDiagStep(4);
+      setDiagRunning(false);
+
+      if (q.success) {
+        setDiagResult({
+          success: true,
+          server: `${config.proxy_host}:${config.proxy_port}`,
+          scheme: config.auth_type.toUpperCase(),
+          bodyDrained: 0,
+          details: `Conexión verificada con éxito. Usuario: ${activeAccount.username}. Saldo restante: ${q.remaining_mb.toFixed(1)} MB.`,
+        });
+      } else {
+        setDiagResult({
+          success: false,
+          server: `${config.proxy_host}:${config.proxy_port}`,
+          scheme: config.auth_type.toUpperCase(),
+          bodyDrained: 0,
+          details: q.error_message || 'No se pudo contactar con el proxy o con cuota.uci.cu.',
+        });
+      }
+    } catch (err: unknown) {
+      setDiagStep(4);
+      setDiagRunning(false);
+      setDiagResult({
+        success: false,
+        server: `${config.proxy_host}:${config.proxy_port}`,
+        scheme: config.auth_type.toUpperCase(),
+        bodyDrained: 0,
+        details: String(err),
+      });
+    }
   };
 
   return (
@@ -418,10 +428,12 @@ export default function App() {
                 </button>
               </div>
               <div className="font-mono text-[11px]">
-                {quota.is_overdraft ? (
+                {quota.allocated_mb === 0 ? (
+                  <span className="text-slate-500">{quota.last_updated}</span>
+                ) : quota.is_overdraft ? (
                   <span className="text-fuchsia-400 font-bold">+{quota.overdraft_mb.toFixed(1)} MB (Sobregiro)</span>
                 ) : (
-                  <span className="text-slate-300">{quota.remaining_mb.toFixed(1)} MB / {quota.allocated_mb} MB</span>
+                  <span className="text-slate-300">{quota.remaining_mb.toFixed(1)} MB / {quota.allocated_mb.toFixed(1)} MB</span>
                 )}
               </div>
             </div>
@@ -573,18 +585,11 @@ export default function App() {
 
             <div className="flex gap-2.5 pt-2">
               <button
-                onClick={() => runDiagnostics(false)}
+                onClick={runDiagnostics}
                 disabled={diagRunning}
                 className="flex-1 py-2 px-3 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white font-medium text-xs transition disabled:opacity-50"
               >
-                {diagRunning ? 'Ejecutando...' : 'Simular Handshake Normal'}
-              </button>
-              <button
-                onClick={() => runDiagnostics(true)}
-                disabled={diagRunning}
-                className="py-2 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium text-xs transition disabled:opacity-50"
-              >
-                Simular Error 407
+                {diagRunning ? 'Verificando con Proxy y Cuota...' : 'Ejecutar Diagnóstico Real'}
               </button>
             </div>
           </div>
