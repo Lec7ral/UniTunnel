@@ -15,11 +15,8 @@ import {
   Gauge,
   CheckCircle2,
   HardDrive,
-  Wifi,
-  RefreshCw,
-  AlertTriangle,
 } from 'lucide-react';
-import { AppConfig, UserAccount, defaultConfig, bridge } from '../services/wailsBridge';
+import { AppConfig, UserAccount, defaultConfig } from '../services/wailsBridge';
 
 interface SettingsDrawerProps {
   isOpen: boolean;
@@ -41,25 +38,7 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
   const [showPasswordMap, setShowPasswordMap] = useState<Record<string, boolean>>({});
   const [newBypassInput, setNewBypassInput] = useState('');
 
-  // Force Offline Hotspot state & rollback logic
-  const [forceHotspotActive, setForceHotspotActive] = useState(false);
-  const [forceHotspotLoading, setForceHotspotLoading] = useState(false);
-  const [forceHotspotNotice, setForceHotspotNotice] = useState<string | null>(null);
 
-  const handleToggleForceHotspot = async (enable: boolean) => {
-    setForceHotspotLoading(true);
-    setForceHotspotNotice(null);
-    try {
-      const result = await bridge.toggleForceOfflineHotspot(enable);
-      setForceHotspotActive(result.enabled);
-      setForceHotspotNotice(result.message);
-    } catch {
-      setForceHotspotActive(false);
-      setForceHotspotNotice('Fallo ejecutando comandos netsh. Se aplicó la reversión automática.');
-    } finally {
-      setForceHotspotLoading(false);
-    }
-  };
 
   // Synchronize when opened
   React.useEffect(() => {
@@ -634,71 +613,7 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
                 </div>
               </div>
 
-              <div className="p-3.5 rounded-xl bg-slate-950/60 border border-slate-800 space-y-3">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <Wifi className="w-4 h-4 text-emerald-400" />
-                    <div>
-                      <h4 className="font-semibold text-slate-200 text-xs">Forzar Hotspot sin internet</h4>
-                      <p className="text-[11px] text-slate-400">Ejecuta `netsh wlan` y bypass NCSI para permitir anclaje offline</p>
-                    </div>
-                  </div>
 
-                  <div className="flex items-center gap-2">
-                    {forceHotspotLoading ? (
-                      <RefreshCw className="w-4 h-4 text-cyan-400 animate-spin" />
-                    ) : (
-                      <button
-                        onClick={() => handleToggleForceHotspot(!forceHotspotActive)}
-                        className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
-                          forceHotspotActive ? 'bg-emerald-600' : 'bg-slate-800'
-                        }`}
-                        title={forceHotspotActive ? 'Desactivar y revertir' : 'Activar Forzar Hotspot'}
-                      >
-                        <span
-                          className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
-                            forceHotspotActive ? 'translate-x-5' : 'translate-x-0'
-                          }`}
-                        />
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                {/* Status Notice & Automated Rollback Feedback */}
-                {forceHotspotNotice && (
-                  <div
-                    className={`p-2.5 rounded-lg border text-xs flex items-start gap-2 ${
-                      forceHotspotActive
-                        ? 'bg-emerald-950/40 border-emerald-800/60 text-emerald-200'
-                        : 'bg-slate-900 border-slate-800 text-slate-300'
-                    }`}
-                  >
-                    <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
-                    <div className="space-y-0.5">
-                      <span className="font-medium block">{forceHotspotNotice}</span>
-                      <span className="text-[10px] text-slate-400">
-                        {forceHotspotActive
-                          ? 'En caso de desconexión o falla, se ejecutará la reversión automática de `netsh`.'
-                          : 'Configuración de red restaurada a los valores de fábrica de Windows.'}
-                      </span>
-                    </div>
-                  </div>
-                )}
-
-                <div className="flex items-center justify-between pt-1 border-t border-slate-900">
-                  <span className="text-[11px] text-slate-400">Diagnóstico Realtek RTL8821CE (SoftAP)</span>
-                  <button
-                    onClick={async () => {
-                      const res = await bridge.checkHotspotCapability();
-                      alert(res);
-                    }}
-                    className="px-2.5 py-1 rounded-md bg-slate-900 hover:bg-slate-800 text-cyan-300 font-medium text-[11px] border border-slate-800 transition shadow-sm"
-                  >
-                    Verificar Wi-Fi Direct
-                  </button>
-                </div>
-              </div>
 
               <div className="p-3.5 rounded-xl bg-slate-950/60 border border-slate-800 space-y-2">
                 <h4 className="font-semibold text-slate-300">Ubicación del Archivo de Configuración</h4>

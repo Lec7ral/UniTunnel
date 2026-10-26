@@ -77,20 +77,38 @@ export default function App() {
   // Mode switching feedback toast
   const [modeNotice, setModeNotice] = useState<string | null>(null);
 
-  // Initial load
+  // Initial load and live backend synchronization
   useEffect(() => {
     async function loadInitial() {
       const loaded = await bridge.getConfig();
       setConfig(loaded);
       const ifaces = await bridge.getInterfaces();
       setInterfaces(ifaces);
+      const isConn = await bridge.isConnected();
+      setConnected(isConn);
+      await bridge.fetchLogs();
     }
     loadInitial();
 
     const unsubscribe = bridge.subscribeLogs((newLogs) => {
       setLogs(newLogs);
     });
-    return () => unsubscribe();
+
+    // Periodic sync with Go backend (tunnel status, logs)
+    const syncInterval = setInterval(async () => {
+      try {
+        const isConn = await bridge.isConnected();
+        setConnected(isConn);
+        await bridge.fetchLogs();
+      } catch {
+        // ignore
+      }
+    }, 3000);
+
+    return () => {
+      unsubscribe();
+      clearInterval(syncInterval);
+    };
   }, []);
 
   // Periodic simulated speed tick when connected
@@ -145,8 +163,8 @@ export default function App() {
 
     // If switching to mobile or direct, stop tunnel if active
     if (mode !== 'uci_cable' && connected) {
+      await bridge.stopTunnel();
       setConnected(false);
-      bridge.addLog('TÚNEL', 'Túnel detenido para dar paso a la navegación directa o móvil.');
     }
   };
 
@@ -162,25 +180,26 @@ export default function App() {
     setTimeout(() => setModeNotice(null), 3500);
   };
 
-  const handleConnectToggle = () => {
+  const handleConnectToggle = async () => {
     if (connected || connecting) {
+      setConnecting(true);
+      await bridge.stopTunnel();
       setConnected(false);
       setConnecting(false);
-      bridge.addLog('TÚNEL', 'Conexión cerrada y rutas de red restauradas.');
+      await bridge.fetchLogs();
       return;
     }
 
     setConnecting(true);
-    bridge.addLog('TÚNEL', `Conectando con ${config.proxy_host}:${config.proxy_port} (Usuario: ${activeAccount.username})...`);
-
-    setTimeout(() => {
-      bridge.addLog('AUTH', `Autenticación NTLMv2 aceptada por Squid (pxuci). Dominio NetBIOS: ${activeAccount.domain || 'UCI'}`);
-      bridge.addLog('HTTP', `Respuesta HTTP 407 drenada correctamente (3526 bytes).`);
-      bridge.addLog('TÚNEL', `✓ Túnel activo. Wintun L3 asignado y DNS seguro DoH RFC 8484 configurado.`);
-      setConnecting(false);
+    const result = await bridge.startTunnel();
+    setConnecting(false);
+    if (result.success) {
       setConnected(true);
       handleRefreshQuota();
-    }, 1200);
+    } else {
+      setConnected(false);
+    }
+    await bridge.fetchLogs();
   };
 
   const handleRefreshQuota = async () => {

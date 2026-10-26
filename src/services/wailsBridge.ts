@@ -97,14 +97,69 @@ export const defaultConfig: AppConfig = {
   vps_secret: '',
 };
 
-function isWailsRuntime(): boolean {
-  return typeof window !== 'undefined' && (window as unknown as { go?: { main?: { AppService?: unknown } } }).go?.main?.AppService !== undefined;
+// Universal caller to communicate with Go backend across all Wails v3 invocation patterns
+async function callWailsService<T>(methodName: string, ...args: unknown[]): Promise<T> {
+  if (typeof window === 'undefined') {
+    throw new Error('No window object available');
+  }
+  const win = window as Record<string, unknown>;
+
+  // Pattern 1: window.go.main.AppService[methodName]
+  const goMain = (win.go as { main?: { AppService?: Record<string, (...a: unknown[]) => Promise<T>> } })?.main?.AppService;
+  if (goMain && typeof goMain[methodName] === 'function') {
+    return await goMain[methodName](...args);
+  }
+
+  // Pattern 2: window.go.service.AppService[methodName]
+  const goService = (win.go as { service?: { AppService?: Record<string, (...a: unknown[]) => Promise<T>> } })?.service?.AppService;
+  if (goService && typeof goService[methodName] === 'function') {
+    return await goService[methodName](...args);
+  }
+
+  // Pattern 3: window.wails.CallService('AppService', methodName, ...args)
+  const wailsObj = win.wails as { CallService?: (s: string, m: string, ...a: unknown[]) => Promise<T>; Call?: (name: string, ...a: unknown[]) => Promise<T> };
+  if (wailsObj && typeof wailsObj.CallService === 'function') {
+    try {
+      return await wailsObj.CallService('AppService', methodName, ...args);
+    } catch {
+      // try service package prefix
+      return await wailsObj.CallService('service.AppService', methodName, ...args);
+    }
+  }
+
+  // Pattern 4: window.wails.Call('AppService.' + methodName, ...args)
+  if (wailsObj && typeof wailsObj.Call === 'function') {
+    return await wailsObj.Call(`AppService.${methodName}`, ...args);
+  }
+
+  // Pattern 5: window.AppService[methodName]
+  const directService = win.AppService as Record<string, (...a: unknown[]) => Promise<T>>;
+  if (directService && typeof directService[methodName] === 'function') {
+    return await directService[methodName](...args);
+  }
+
+  throw new Error(`Wails AppService.${methodName} not found on window`);
+}
+
+export function isWailsRuntime(): boolean {
+  if (typeof window === 'undefined') return false;
+  const win = window as Record<string, unknown>;
+  const goObj = win.go as { main?: { AppService?: unknown }; service?: { AppService?: unknown } };
+  const wailsObj = win.wails as { CallService?: unknown; Call?: unknown };
+  return !!(
+    goObj?.main?.AppService ||
+    goObj?.service?.AppService ||
+    wailsObj?.CallService ||
+    wailsObj?.Call ||
+    win.AppService
+  );
 }
 
 class WailsBridge {
   private configCache: AppConfig | null = null;
   private logListeners: ((logs: string[]) => void)[] = [];
   private currentLogs: string[] = [];
+  private simulatedConnected = false;
 
   constructor() {
     this.initLogs();
@@ -150,7 +205,30 @@ class WailsBridge {
     };
   }
 
-  public clearLogs() {
+  public async fetchLogs(): Promise<string[]> {
+    if (isWailsRuntime()) {
+      try {
+        const backendLogs = await callWailsService<string[]>('GetLogs');
+        if (Array.isArray(backendLogs) && backendLogs.length > 0) {
+          this.currentLogs = backendLogs;
+          this.logListeners.forEach((listener) => listener(this.currentLogs));
+          return backendLogs;
+        }
+      } catch (err) {
+        console.debug('GetLogs fallback:', err);
+      }
+    }
+    return this.currentLogs;
+  }
+
+  public async clearLogs(): Promise<void> {
+    if (isWailsRuntime()) {
+      try {
+        await callWailsService<void>('ClearLogs');
+      } catch (err) {
+        console.debug('ClearLogs fallback:', err);
+      }
+    }
     this.currentLogs = [
       `[${new Date().toLocaleTimeString()}] [SISTEMA] Registro limpiado.`,
     ];
@@ -163,11 +241,13 @@ class WailsBridge {
   public async getConfig(): Promise<AppConfig> {
     if (isWailsRuntime()) {
       try {
-        const remote = await (window as unknown as { go: { main: { AppService: { GetConfig: () => Promise<AppConfig> } } } }).go.main.AppService.GetConfig();
-        this.configCache = remote;
-        return remote;
+        const remote = await callWailsService<AppConfig>('GetConfig');
+        if (remote && remote.proxy_host) {
+          this.configCache = remote;
+          return remote;
+        }
       } catch (err) {
-        console.warn('Fallo llamada Wails GetConfig, usando local:', err);
+        console.warn('Fallo llamada Wails GetConfig, usando caché local:', err);
       }
     }
 
@@ -193,17 +273,67 @@ class WailsBridge {
 
     if (isWailsRuntime()) {
       try {
-        await (window as unknown as { go: { main: { AppService: { SaveConfig: (c: AppConfig) => Promise<void> } } } }).go.main.AppService.SaveConfig(cfg);
-        this.addLog('CONFIG', 'Ajustes guardados en config.json.');
+        await callWailsService<void>('SaveConfig', cfg);
+        this.addLog('CONFIG', 'Ajustes guardados correctamente en config.json.');
         return true;
       } catch (err) {
-        this.addLog('ERROR', `Error guardando en Go: ${err}`);
+        this.addLog('ERROR', `Error guardando en backend Go: ${err}`);
         return false;
       }
     }
 
-    this.addLog('CONFIG', 'Ajustes actualizados correctamente en config.json.');
+    this.addLog('CONFIG', 'Ajustes actualizados en config.json.');
     return true;
+  }
+
+  public async startTunnel(): Promise<{ success: boolean; error?: string }> {
+    if (isWailsRuntime()) {
+      try {
+        this.addLog('TÚNEL', 'Solicitando inicio del túnel al backend Go (NTLMv2 / Wintun)...');
+        await callWailsService<void>('StartTunnel');
+        await this.fetchLogs();
+        return { success: true };
+      } catch (err: unknown) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        this.addLog('ERROR', `Fallo iniciando túnel: ${errMsg}`);
+        return { success: false, error: errMsg };
+      }
+    }
+
+    // Browser development simulation
+    this.simulatedConnected = true;
+    this.addLog('TÚNEL', 'Iniciando conexión con 10.0.0.1:8080 (Modo: tun)...');
+    this.addLog('AUTH', 'Autenticación NTLMv2 aceptada por Squid (pxuci). Dominio NetBIOS: UCI');
+    this.addLog('TÚNEL', '✓ Túnel activo. SOCKS5 en 127.0.0.1:1080 · HTTP en 127.0.0.1:8081');
+    return { success: true };
+  }
+
+  public async stopTunnel(): Promise<{ success: boolean }> {
+    if (isWailsRuntime()) {
+      try {
+        this.addLog('TÚNEL', 'Deteniendo túnel y restaurando configuraciones...');
+        await callWailsService<void>('StopTunnel');
+        await this.fetchLogs();
+        return { success: true };
+      } catch (err) {
+        console.warn('Error llamando a StopTunnel en Go:', err);
+      }
+    }
+
+    this.simulatedConnected = false;
+    this.addLog('TÚNEL', '✓ Desconectado. Proxy de sistema deshabilitado.');
+    return { success: true };
+  }
+
+  public async isConnected(): Promise<boolean> {
+    if (isWailsRuntime()) {
+      try {
+        return await callWailsService<boolean>('IsConnected');
+      } catch {
+        // fallback
+      }
+    }
+    return this.simulatedConnected;
   }
 
   public async applyNetworkMode(mode: NetworkMode): Promise<boolean> {
@@ -213,7 +343,8 @@ class WailsBridge {
 
     if (isWailsRuntime()) {
       try {
-        await (window as unknown as { go: { main: { AppService: { SetNetworkMode: (m: string) => Promise<void> } } } }).go.main.AppService.SetNetworkMode(mode);
+        await callWailsService<void>('SetNetworkMode', mode);
+        await this.fetchLogs();
         return true;
       } catch (err) {
         this.addLog('ERROR', `Error aplicando modo de red en Windows: ${err}`);
@@ -221,18 +352,12 @@ class WailsBridge {
       }
     }
 
-    // Simulated Windows PowerShell Execution
     if (mode === 'uci_cable') {
-      this.addLog('RED', 'Aplicando PowerShell: Set-NetIPInterface -InterfaceAlias "*Ethernet*" -InterfaceMetric 10');
-      this.addLog('RED', 'Aplicando PowerShell: Set-NetIPInterface -InterfaceAlias "*Wi-Fi*" -InterfaceMetric 100');
-      this.addLog('RED', '✓ Modo Cable UCI Activado: Prioridad en cable Ethernet universitario.');
+      this.addLog('RED', '✓ Modo Cable UCI: Prioridad métrica 10 asignada a Ethernet (Wi-Fi 100).');
     } else if (mode === 'wifi_mobile') {
-      this.addLog('RED', 'Aplicando PowerShell: Set-NetIPInterface -InterfaceAlias "*Wi-Fi*" -InterfaceMetric 10');
-      this.addLog('RED', 'Aplicando PowerShell: Set-NetIPInterface -InterfaceAlias "*Ethernet*" -InterfaceMetric 100');
-      this.addLog('RED', '✓ Modo Wi-Fi / Móvil Activado: Prioridad en Wi-Fi. Puedes navegar con datos de tu teléfono móvil sin desenchufar el cable de red.');
+      this.addLog('RED', '✓ Modo Wi-Fi / Datos Móviles: Prioridad métrica 10 asignada a Wi-Fi (Ethernet 100).');
     } else {
-      this.addLog('RED', 'Aplicando PowerShell: Set-NetIPInterface -AutomaticMetric Enabled');
-      this.addLog('RED', '✓ Modo Directo Activado: Métricas automáticas restauradas en Windows.');
+      this.addLog('RED', '✓ Modo Directo: Métricas automáticas restauradas en Windows.');
     }
     return true;
   }
@@ -244,7 +369,7 @@ class WailsBridge {
 
     if (isWailsRuntime()) {
       try {
-        await (window as unknown as { go: { main: { AppService: { SetAlwaysOnTop: (p: boolean) => Promise<void> } } } }).go.main.AppService.SetAlwaysOnTop(pinned);
+        await callWailsService<void>('SetAlwaysOnTop', pinned);
         return true;
       } catch (err) {
         console.warn('Error llamando a SetAlwaysOnTop en Wails:', err);
@@ -254,7 +379,7 @@ class WailsBridge {
     if (pinned) {
       this.addLog('SISTEMA', 'Ventana fijada al frente (Siempre visible sobre otras apps).');
     } else {
-      this.addLog('SISTEMA', 'Ventana desanclada (Profundidad estándar).');
+      this.addLog('SISTEMA', 'Ventana liberada (Comportamiento de profundidad estándar).');
     }
     return true;
   }
@@ -262,7 +387,10 @@ class WailsBridge {
   public async getInterfaces(): Promise<InterfaceStatus[]> {
     if (isWailsRuntime()) {
       try {
-        return await (window as unknown as { go: { main: { AppService: { GetInterfaces: () => Promise<InterfaceStatus[]> } } } }).go.main.AppService.GetInterfaces();
+        const list = await callWailsService<InterfaceStatus[]>('GetInterfaces');
+        if (Array.isArray(list) && list.length > 0) {
+          return list;
+        }
       } catch (err) {
         console.warn('Error obteniendo interfaces de Go:', err);
       }
@@ -289,16 +417,19 @@ class WailsBridge {
   public async fetchQuota(account?: UserAccount): Promise<QuotaInfo> {
     if (isWailsRuntime()) {
       try {
-        return await (window as unknown as { go: { main: { AppService: { CheckQuota: () => Promise<QuotaInfo> } } } }).go.main.AppService.CheckQuota();
+        const realQuota = await callWailsService<QuotaInfo>('CheckQuota');
+        if (realQuota && realQuota.allocated_mb > 0) {
+          await this.fetchLogs();
+          return realQuota;
+        }
       } catch (err) {
         console.warn('Error en Wails CheckQuota:', err);
       }
     }
 
-    // High fidelity simulator matching cuota.uci.cu
+    // Fallback simulation matching cuota.uci.cu
     const user = account?.username || 'yoanbrp';
     const total = 500;
-    // Allow demonstration of normal vs overdraft
     const used = +(340 + Math.random() * 80).toFixed(1);
     const isOverdraft = used > total;
     const overdraftMb = isOverdraft ? +(used - total).toFixed(1) : 0;
@@ -328,47 +459,6 @@ class WailsBridge {
 
     return result;
   }
-
-  public async checkHotspotCapability(): Promise<string> {
-    if (isWailsRuntime()) {
-      try {
-        return await (window as unknown as { go: { main: { AppService: { CheckHotspotCapability: () => Promise<string> } } } }).go.main.AppService.CheckHotspotCapability();
-      } catch (err) {
-        console.warn('Error en Wails CheckHotspotCapability:', err);
-      }
-    }
-    this.addLog('HOTSPOT', 'Análisis Hotspot: Realtek RTL8821CE · Wi-Fi Direct compatible · Requiere adaptador loopback para omitir validación NCSI sin internet.');
-    return 'Adaptador Realtek RTL8821CE · Wi-Fi Direct compatible · Requiere adaptador loopback.';
-  }
-
-  public async toggleForceOfflineHotspot(enable: boolean): Promise<{ success: boolean; message: string; enabled: boolean }> {
-    if (isWailsRuntime()) {
-      try {
-        return await (window as unknown as { go: { main: { AppService: { ToggleForceOfflineHotspot: (enable: boolean) => Promise<{ success: boolean; message: string; enabled: boolean }> } } } }).go.main.AppService.ToggleForceOfflineHotspot(enable);
-      } catch (err) {
-        console.warn('Error en Wails ToggleForceOfflineHotspot:', err);
-      }
-    }
-
-    if (enable) {
-      this.addLog('HOTSPOT', 'Ejecutando `netsh wlan set hostednetwork mode=allow` y bypass de NCSI en el Registro...');
-      this.addLog('HOTSPOT', '✓ [SIMULADOR] Hotspot sin internet forzado con éxito via netsh wlan & NCSI.');
-      return {
-        success: true,
-        message: 'Hotspot sin internet forzado activado con éxito (netsh & NCSI activos).',
-        enabled: true,
-      };
-    } else {
-      this.addLog('HOTSPOT', 'Ejecutando `netsh wlan set hostednetwork mode=disallow` para revertir cambios...');
-      this.addLog('HOTSPOT', '✓ [SIMULADOR] Configuración de Hotspot revertida al estado original.');
-      return {
-        success: true,
-        message: 'Configuración revertida a los valores predeterminados de Windows.',
-        enabled: false,
-      };
-    }
-  }
 }
 
 export const bridge = new WailsBridge();
-
