@@ -15,8 +15,10 @@ import {
   Gauge,
   CheckCircle2,
   HardDrive,
+  Wifi,
+  RefreshCw,
 } from 'lucide-react';
-import { AppConfig, UserAccount, defaultConfig } from '../services/wailsBridge';
+import { AppConfig, UserAccount, defaultConfig, bridge } from '../services/wailsBridge';
 
 interface SettingsDrawerProps {
   isOpen: boolean;
@@ -38,15 +40,48 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
   const [showPasswordMap, setShowPasswordMap] = useState<Record<string, boolean>>({});
   const [newBypassInput, setNewBypassInput] = useState('');
 
-
+  // Hotspot offline bypass & Wi-Fi Direct states
+  const [forceHotspotActive, setForceHotspotActive] = useState(false);
+  const [forceHotspotLoading, setForceHotspotLoading] = useState(false);
+  const [forceHotspotNotice, setForceHotspotNotice] = useState<string | null>(null);
+  const [diagLoading, setDiagLoading] = useState(false);
+  const [diagResult, setDiagResult] = useState<string | null>(null);
 
   // Synchronize when opened
   React.useEffect(() => {
     if (isOpen) {
       setCfg(initialConfig);
       setSaveSuccess(false);
+      bridge.isHotspotForced().then(setForceHotspotActive).catch(() => {});
     }
   }, [isOpen, initialConfig]);
+
+  const handleToggleForceHotspot = async () => {
+    setForceHotspotLoading(true);
+    setForceHotspotNotice(null);
+    try {
+      const nextState = !forceHotspotActive;
+      const res = await bridge.toggleForceOfflineHotspot(nextState);
+      setForceHotspotActive(res.enabled);
+      setForceHotspotNotice(res.message);
+    } catch (err) {
+      setForceHotspotNotice(`Error al alternar Hotspot: ${err}`);
+    } finally {
+      setForceHotspotLoading(false);
+    }
+  };
+
+  const handleCheckHotspotDiag = async () => {
+    setDiagLoading(true);
+    try {
+      const report = await bridge.checkHotspotCapability();
+      setDiagResult(report);
+    } catch (err) {
+      setDiagResult(`Error en diagnóstico: ${err}`);
+    } finally {
+      setDiagLoading(false);
+    }
+  };
 
   if (!isOpen) return null;
 
@@ -613,7 +648,67 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
                 </div>
               </div>
 
+              {/* Forzar Hotspot sin internet (Bypass NCSI & SoftAP) */}
+              <div className="p-3.5 rounded-xl bg-slate-950/60 border border-slate-800 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded-lg bg-cyan-950/80 border border-cyan-800/60 flex items-center justify-center text-cyan-400">
+                      <Wifi className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <h4 className="font-semibold text-slate-200 text-sm">Forzar Hotspot sin Internet</h4>
+                      <p className="text-[11px] text-slate-400">
+                        Bypass NCSI &amp; SoftAP para Wi-Fi Direct (Realtek RTL8821CE)
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleToggleForceHotspot}
+                    disabled={forceHotspotLoading}
+                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${
+                      forceHotspotActive ? 'bg-cyan-600' : 'bg-slate-700'
+                    }`}
+                  >
+                    <span
+                      className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                        forceHotspotActive ? 'translate-x-6' : 'translate-x-1'
+                      }`}
+                    />
+                  </button>
+                </div>
 
+                <p className="text-[11px] text-slate-400 leading-relaxed">
+                  Permite compartir la red por Wi-Fi aun cuando Windows no detecte una puerta de enlace de internet pública activa (enlace local o proxy institucional). Cuenta con <strong>rollback automático</strong> si el adaptador rechaza la difusión inalámbrica.
+                </p>
+
+                {forceHotspotNotice && (
+                  <div className="p-2.5 rounded-lg bg-cyan-950/40 border border-cyan-800/50 text-cyan-300 text-[11px]">
+                    {forceHotspotNotice}
+                  </div>
+                )}
+
+                <div className="pt-1 flex items-center justify-between">
+                  <button
+                    type="button"
+                    onClick={handleCheckHotspotDiag}
+                    disabled={diagLoading}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium transition"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${diagLoading ? 'animate-spin' : ''}`} />
+                    Verificar Wi-Fi Direct (SoftAP)
+                  </button>
+                  {forceHotspotActive && (
+                    <span className="text-[11px] font-mono text-cyan-400 font-medium">SSID: UniTunnel_UCI</span>
+                  )}
+                </div>
+
+                {diagResult && (
+                  <pre className="mt-2 p-2.5 rounded-lg bg-slate-900 border border-slate-800 text-[10px] text-slate-300 font-mono whitespace-pre-wrap max-h-40 overflow-y-auto">
+                    {diagResult}
+                  </pre>
+                )}
+              </div>
 
               <div className="p-3.5 rounded-xl bg-slate-950/60 border border-slate-800 space-y-2">
                 <h4 className="font-semibold text-slate-300">Ubicación del Archivo de Configuración</h4>

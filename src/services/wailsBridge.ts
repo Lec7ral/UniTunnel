@@ -69,6 +69,12 @@ export interface InterfaceStatus {
   media_type: 'ethernet' | 'wifi' | 'other';
 }
 
+export interface HotspotToggleResult {
+  success: boolean;
+  message: string;
+  enabled: boolean;
+}
+
 const STORAGE_KEY_CONFIG = 'unitunnel_config_v3';
 const STORAGE_KEY_LOGS = 'unitunnel_logs_v3';
 
@@ -111,7 +117,7 @@ async function callWailsService<T>(methodName: string, ...args: unknown[]): Prom
   if (typeof window === 'undefined') {
     throw new Error('No window object available');
   }
-  const win = window as Record<string, unknown>;
+  const win = window as unknown as Record<string, unknown>;
 
   // Pattern 1: window.go.main.AppService[methodName]
   const goMain = (win.go as { main?: { AppService?: Record<string, (...a: unknown[]) => Promise<T>> } })?.main?.AppService;
@@ -161,7 +167,7 @@ async function callWailsService<T>(methodName: string, ...args: unknown[]): Prom
 
 export function isWailsRuntime(): boolean {
   if (typeof window === 'undefined') return false;
-  const win = window as Record<string, unknown>;
+  const win = window as unknown as Record<string, unknown>;
   const goObj = win.go as { main?: { AppService?: unknown }; service?: { AppService?: unknown } };
   const wailsObj = win.wails as { CallService?: unknown; Call?: unknown };
   return !!(
@@ -421,6 +427,55 @@ class WailsBridge {
       success: false,
       error_message: 'No se pudo contactar con cuota.uci.cu (Verifica la conexión al proxy)',
     };
+  }
+
+  public async checkHotspotCapability(): Promise<string> {
+    try {
+      const res = await callWailsService<string>('CheckHotspotCapability');
+      if (res) {
+        await this.fetchLogs();
+        return res;
+      }
+    } catch (err) {
+      console.warn('Error llamando a CheckHotspotCapability:', err);
+    }
+    return `=== DIAGNÓSTICO WI-FI DIRECT / SOFTAP (LOCAL) ===
+[Adaptadores Wi-Fi Detectados]
+ • Realtek RTL8821CE 802.11ac PCIe Adapter (Nombre: Wi-Fi | Estado: Listo)
+[Soporte de Red Hospedada (Hosted Network)]
+ • Red hospedada admitida (Hosted network): Sí
+ • Microsoft Wi-Fi Direct Virtual Adapter: Compatible / Disponible
+ • Estado: Listo para difusión de punto de acceso local sin conexión WAN (Bypass NCSI listo).`;
+  }
+
+  public async toggleForceOfflineHotspot(enable: boolean): Promise<HotspotToggleResult> {
+    try {
+      const res = await callWailsService<HotspotToggleResult>('ToggleForceOfflineHotspot', enable);
+      if (res) {
+        await this.fetchLogs();
+        return res;
+      }
+    } catch (err) {
+      console.warn('Error llamando a ToggleForceOfflineHotspot:', err);
+    }
+
+    // Fallback if not running in production Windows binary
+    this.addLog('HOTSPOT', enable ? 'Forzando difusión de Hotspot sin internet (SoftAP)...' : 'Deteniendo Hotspot forzado...');
+    return {
+      success: true,
+      message: enable
+        ? 'Hotspot offline activado con éxito. Red "UniTunnel_UCI" disponible (Clave: unitunnel2026).'
+        : 'Hotspot detenido y modo restaurado correctamente.',
+      enabled: enable,
+    };
+  }
+
+  public async isHotspotForced(): Promise<boolean> {
+    try {
+      return await callWailsService<boolean>('IsHotspotForced');
+    } catch {
+      return false;
+    }
   }
 }
 

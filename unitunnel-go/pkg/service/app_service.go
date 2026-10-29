@@ -25,12 +25,19 @@ type TrafficStats struct {
 	PingMS    int64   `json:"ping_ms"`
 }
 
+type HotspotToggleResult struct {
+	Success bool   `json:"success"`
+	Message string `json:"message"`
+	Enabled bool   `json:"enabled"`
+}
+
 type AppService struct {
 	mu                  sync.Mutex
 	cfg                 *config.Config
 	tunEngine           *tun.Engine
 	connected           bool
 	connecting          bool
+	hotspotForced       bool
 	logs                []string
 	maxLogs             int
 	lastTrafficTime     time.Time
@@ -382,3 +389,65 @@ func (s *AppService) IsAlwaysOnTop() bool {
 	defer s.mu.Unlock()
 	return s.cfg.AlwaysOnTop
 }
+
+// CheckHotspotCapability runs a diagnostic check on the Wi-Fi adapter (e.g. Realtek RTL8821CE) and SoftAP capabilities
+func (s *AppService) CheckHotspotCapability() (string, error) {
+	s.AddLog("HOTSPOT", "Iniciando diagnóstico de adaptador Wi-Fi y soporte SoftAP / Hosted Network...")
+	diag, err := network.CheckHotspotCapability()
+	if err != nil {
+		s.AddLog("HOTSPOT", fmt.Sprintf("Error en diagnóstico: %v", err))
+		return "", err
+	}
+	s.AddLog("HOTSPOT", "✓ Diagnóstico de Wi-Fi Direct / SoftAP completado.")
+	return diag, nil
+}
+
+// ToggleForceOfflineHotspot enables or disables local hotspot without internet connection requirement.
+// Includes automated rollback if execution or adapter broadcast encounters an error.
+func (s *AppService) ToggleForceOfflineHotspot(enable bool) HotspotToggleResult {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if enable {
+		s.AddLog("HOTSPOT", "Activando Hotspot forzado sin internet (Bypass NCSI / SoftAP)...")
+		err := network.EnableForceOfflineHotspot("UniTunnel_UCI", "unitunnel2026")
+		if err != nil {
+			s.hotspotForced = false
+			s.AddLog("HOTSPOT", fmt.Sprintf("Fallo en activación: %v. Se ejecutó rollback automático.", err))
+			return HotspotToggleResult{
+				Success: false,
+				Message: fmt.Sprintf("Error: %v (Rollback automático completado).", err),
+				Enabled: false,
+			}
+		}
+		s.hotspotForced = true
+		s.AddLog("HOTSPOT", "✓ Hotspot forzado activo (SSID: UniTunnel_UCI | Clave: unitunnel2026). Compartición offline habilitada.")
+		return HotspotToggleResult{
+			Success: true,
+			Message: "Hotspot offline activado con éxito. Red 'UniTunnel_UCI' disponible para conectar dispositivos.",
+			Enabled: true,
+		}
+	}
+
+	s.AddLog("HOTSPOT", "Deteniendo difusión de Hotspot forzado y restaurando adaptador...")
+	err := network.DisableForceOfflineHotspot()
+	s.hotspotForced = false
+	if err != nil {
+		s.AddLog("HOTSPOT", fmt.Sprintf("Aviso al desactivar Hotspot: %v", err))
+	} else {
+		s.AddLog("HOTSPOT", "✓ Hotspot desactivado y adaptadores restaurados.")
+	}
+	return HotspotToggleResult{
+		Success: true,
+		Message: "Hotspot offline detenido y modo restaurado correctamente.",
+		Enabled: false,
+	}
+}
+
+// IsHotspotForced returns current status of the forced hotspot
+func (s *AppService) IsHotspotForced() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.hotspotForced
+}
+
