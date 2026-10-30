@@ -491,6 +491,11 @@ export default function App() {
               <div className="flex items-center gap-1.5 font-semibold text-slate-300 text-[11px]">
                 <Gauge className={`w-3.5 h-3.5 ${quota.is_overdraft ? 'text-fuchsia-400' : 'text-cyan-400'}`} />
                 <span>Cuota UCI</span>
+                {quota.navigation_level && (
+                  <span className="text-[9px] px-1.5 py-0.2 rounded bg-cyan-950/80 text-cyan-300 border border-cyan-800/60 font-mono">
+                    {quota.navigation_level}
+                  </span>
+                )}
                 <button
                   onClick={handleRefreshQuota}
                   disabled={quotaLoading}
@@ -513,7 +518,9 @@ export default function App() {
                 ) : quota.is_overdraft ? (
                   <span className="text-fuchsia-400 font-bold">+{quota.overdraft_mb.toFixed(1)} MB (Sobregiro)</span>
                 ) : (
-                  <span className="text-slate-300">{quota.remaining_mb.toFixed(1)} MB / {quota.allocated_mb.toFixed(1)} MB</span>
+                  <span className="text-slate-300">
+                    {quota.remaining_mb.toFixed(1)} MB / {quota.allocated_mb.toFixed(0)} MB
+                  </span>
                 )}
               </div>
             </div>

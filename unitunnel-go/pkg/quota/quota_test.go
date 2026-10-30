@@ -83,6 +83,28 @@ func TestParseUCIResponse(t *testing.T) {
 		}
 	})
 
+	t.Run("exact UCI portal cuota and cuota_usada response", func(t *testing.T) {
+		raw := `{ success: true, data: {"cuota":800,"cuota_usada":0.056301116943359,"nivel_navegacion":"Navegaci\u00f3n plena","usuario":"yoanbrp"} }`
+		info := parseUCIResponse(raw, "yoanbrp")
+
+		if !info.Success {
+			t.Fatalf("expected Success=true, got false, err: %s", info.ErrorMessage)
+		}
+		if info.AllocatedMB != 800 {
+			t.Errorf("AllocatedMB = %f, want 800", info.AllocatedMB)
+		}
+		if info.UsedMB < 0.056 || info.UsedMB > 0.057 {
+			t.Errorf("UsedMB = %f, want ~0.0563", info.UsedMB)
+		}
+		expectedRemaining := 800.0 - 0.056301116943359
+		if info.RemainingMB < expectedRemaining-0.001 || info.RemainingMB > expectedRemaining+0.001 {
+			t.Errorf("RemainingMB = %f, want ~%f", info.RemainingMB, expectedRemaining)
+		}
+		if info.NavigationLevel != "Navegación plena" {
+			t.Errorf("NavigationLevel = %q, want %q", info.NavigationLevel, "Navegación plena")
+		}
+	})
+
 	t.Run("failed authentication pseudo-JSON", func(t *testing.T) {
 		raw := `{success: false, msg: 'Usuario o contraseña incorrecta'}`
 		info := parseUCIResponse(raw, "baduser")

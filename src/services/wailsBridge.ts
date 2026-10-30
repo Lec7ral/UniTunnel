@@ -57,6 +57,7 @@ export interface QuotaInfo {
   clamped_percent: number;
   is_overdraft: boolean;
   overdraft_mb: number;
+  navigation_level?: string;
   status_level: 'normal' | 'warning' | 'critical' | 'exhausted' | 'overdraft';
   last_updated: string;
   raw_response?: string;

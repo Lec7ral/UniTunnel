@@ -22,10 +22,11 @@ type QuotaInfo struct {
 	RemainingMB    float64   `json:"remaining_mb"`
 	PercentUsed    float64   `json:"percent_used"`
 	ClampedPercent float64   `json:"clamped_percent"` // Clamped strictly to 0..100 for safe progress bars
-	IsOverdraft    bool      `json:"is_overdraft"`    // True if user exceeded allocated quota (permitted in UCI)
-	OverdraftMB    float64   `json:"overdraft_mb"`    // Amount exceeded above allocated quota
-	StatusLevel    string    `json:"status_level"`    // "normal", "warning", "critical", "exhausted", "overdraft"
-	LastUpdated    time.Time `json:"last_updated"`
+	IsOverdraft     bool      `json:"is_overdraft"`    // True if user exceeded allocated quota (permitted in UCI)
+	OverdraftMB     float64   `json:"overdraft_mb"`    // Amount exceeded above allocated quota
+	NavigationLevel string    `json:"navigation_level,omitempty"` // e.g. "Navegación plena"
+	StatusLevel     string    `json:"status_level"`    // "normal", "warning", "critical", "exhausted", "overdraft"
+	LastUpdated     time.Time `json:"last_updated"`
 	RawSnippet     string    `json:"raw_snippet"`
 	RawResponse    string    `json:"raw_response"`
 	Success        bool      `json:"success"`
@@ -272,21 +273,30 @@ func extractFromData(data any, info *QuotaInfo) {
 			lk := strings.ToLower(k)
 			numMB := parseValueToMB(val)
 
-			if strings.Contains(lk, "asignad") || strings.Contains(lk, "allocat") ||
-				strings.Contains(lk, "cuota") || strings.Contains(lk, "plan") ||
-				strings.Contains(lk, "limit") || strings.Contains(lk, "total") {
-				if numMB > 0 {
-					info.AllocatedMB = numMB
+			if strings.Contains(lk, "nivel") || strings.Contains(lk, "navegacio") {
+				if s, ok := val.(string); ok {
+					info.NavigationLevel = s
 				}
-			} else if strings.Contains(lk, "consum") || strings.Contains(lk, "used") ||
-				strings.Contains(lk, "gastad") || strings.Contains(lk, "uso") {
+			}
+
+			// Prioritize USED / CONSUMED keywords first so "cuota_usada" or "cuota_consumida"
+			// are assigned to UsedMB instead of matching the general "cuota" prefix for AllocatedMB.
+			if strings.Contains(lk, "usad") || strings.Contains(lk, "consum") ||
+				strings.Contains(lk, "used") || strings.Contains(lk, "gastad") ||
+				strings.Contains(lk, "uso") {
 				if numMB >= 0 {
 					info.UsedMB = numMB
 				}
 			} else if strings.Contains(lk, "restan") || strings.Contains(lk, "remain") ||
 				strings.Contains(lk, "disponib") || strings.Contains(lk, "sald") ||
-				strings.Contains(lk, "quedan") || strings.Contains(lk, "megas") {
+				strings.Contains(lk, "quedan") || strings.Contains(lk, "libre") {
 				info.RemainingMB = numMB
+			} else if strings.Contains(lk, "asignad") || strings.Contains(lk, "allocat") ||
+				strings.Contains(lk, "cuota") || strings.Contains(lk, "plan") ||
+				strings.Contains(lk, "limit") || strings.Contains(lk, "total") {
+				if numMB > 0 {
+					info.AllocatedMB = numMB
+				}
 			}
 		}
 
