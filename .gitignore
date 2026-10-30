@@ -5,6 +5,15 @@
 # Web companion dependencies
 node_modules/
 
+# Frontend build output (embedded by unitunnel-go/main.go via //go:embed all:dist)
+# Only the placeholder is tracked so a clean clone can still run `go build`.
+/unitunnel-go/dist/*
+!/unitunnel-go/dist/.gitkeep
+
+# Release output (local build_windows.bat + CI)
+/dist/
+/dist-release/
+
 # Go build artifacts and binaries
 bin/
 *.exe
@@ -25,3 +34,8 @@ unitunnel-go/config.json
 # OS files
 .DS_Store
 Thumbs.db
+
+# Editor / IDE state
+.idea/
+.vscode/
+*.swp

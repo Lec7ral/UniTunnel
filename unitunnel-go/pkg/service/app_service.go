@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/url"
@@ -8,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"unitunnel/pkg/autostart"
 	"unitunnel/pkg/config"
 	"unitunnel/pkg/network"
 	"unitunnel/pkg/quota"
@@ -31,13 +33,26 @@ type HotspotToggleResult struct {
 	Enabled bool   `json:"enabled"`
 }
 
+// connState models the tunnel lifecycle. A single enum (instead of the old
+// connected/connecting booleans) makes illegal transitions explicit: a stop
+// requested while connecting must win over the start that is still finishing.
+type connState int
+
+const (
+	stateIdle connState = iota
+	stateConnecting
+	stateConnected
+	stateStopping
+)
+
 type AppService struct {
 	mu                  sync.Mutex
 	cfg                 *config.Config
 	tunEngine           *tun.Engine
-	connected           bool
-	connecting          bool
+	state               connState
 	hotspotForced       bool
+	pingCancel          context.CancelFunc
+	quotaCancel         context.CancelFunc
 	logs                []string
 	maxLogs             int
 	lastTrafficTime     time.Time
@@ -84,15 +99,29 @@ func (s *AppService) GetConfig() *config.Config {
 
 // SaveConfig writes the updated configuration to disk and updates memory
 func (s *AppService) SaveConfig(newCfg *config.Config) error {
+	if newCfg == nil {
+		return fmt.Errorf("configuración vacía")
+	}
+	if err := newCfg.Validate(); err != nil {
+		s.AddLog("CONFIG", fmt.Sprintf("Configuración rechazada: %v", err))
+		return err
+	}
+
+	// Persist first: if the disk write fails, memory must keep the old values
+	// instead of pretending the change was applied.
+	if err := config.SaveConfig(newCfg); err != nil {
+		s.AddLog("CONFIG", fmt.Sprintf("Error guardando config.json: %v", err))
+		return err
+	}
+
+	if err := autostart.Apply(newCfg.AutoStart); err != nil {
+		s.AddLog("CONFIG", fmt.Sprintf("Aviso: no se pudo aplicar el arranque automático: %v", err))
+	}
+
 	s.mu.Lock()
 	s.cfg = newCfg
 	s.mu.Unlock()
 
-	err := config.SaveConfig(newCfg)
-	if err != nil {
-		s.AddLog("CONFIG", fmt.Sprintf("Error guardando config.json: %v", err))
-		return err
-	}
 	s.AddLog("CONFIG", "Configuración actualizada y guardada correctamente en config.json")
 	return nil
 }
@@ -126,13 +155,13 @@ func (s *AppService) SetNetworkMode(mode string) error {
 		s.AddLog("RED", "✓ Modo Cable UCI: Prioridad métrica 10 asignada a Ethernet. Tráfico universitario activo.")
 	case string(network.ModeWiFiMobile):
 		_ = sysproxy.DisableSystemProxy()
-		if s.connected {
+		if s.IsConnected() {
 			_ = s.StopTunnel()
 		}
 		s.AddLog("RED", "✓ Modo Wi-Fi / Datos Móviles: Prioridad métrica 10 asignada a Wi-Fi (Ethernet 100). Tráfico redirigido al teléfono móvil sin desconectar el cable de red.")
 	case string(network.ModeDirect):
 		_ = sysproxy.DisableSystemProxy()
-		if s.connected {
+		if s.IsConnected() {
 			_ = s.StopTunnel()
 		}
 		s.AddLog("RED", "✓ Modo Directo: Métricas automáticas restauradas en Windows.")
@@ -152,11 +181,11 @@ func (s *AppService) GetInterfaces() ([]network.InterfaceStatus, error) {
 // StartTunnel initiates connection to Squid with NTLMv2 and configures Wintun/Sysproxy
 func (s *AppService) StartTunnel() error {
 	s.mu.Lock()
-	if s.connected || s.connecting {
+	if s.state != stateIdle {
 		s.mu.Unlock()
 		return nil
 	}
-	s.connecting = true
+	s.state = stateConnecting
 	cfg := s.cfg
 	s.mu.Unlock()
 
@@ -181,8 +210,7 @@ func (s *AppService) StartTunnel() error {
 	err := engine.Start()
 	if err != nil {
 		s.mu.Lock()
-		s.connecting = false
-		s.connected = false
+		s.state = stateIdle
 		s.tunEngine = nil
 		s.mu.Unlock()
 		s.AddLog("ERROR", fmt.Sprintf("Error iniciando túnel: %v", err))
@@ -192,14 +220,33 @@ func (s *AppService) StartTunnel() error {
 		return err
 	}
 
+	// A stop requested while engine.Start was running wins over this start.
+	s.mu.Lock()
+	if s.state != stateConnecting {
+		s.mu.Unlock()
+		engine.Stop()
+		return nil
+	}
+	s.mu.Unlock()
+
 	// If capture mode is system_proxy or uci_cable, configure Windows system proxy
 	if cfg.CaptureMode == "system_proxy" || cfg.NetworkMode == "uci_cable" {
-		_ = sysproxy.EnableSystemProxy(cfg.LocalHTTPPort, cfg.LocalSocksPort)
+		if err := sysproxy.EnableSystemProxy(cfg.LocalHTTPPort, cfg.LocalSocksPort); err != nil {
+			s.AddLog("RED", fmt.Sprintf("⚠ No se pudo activar el proxy del sistema: %v", err))
+		}
 	}
 
 	s.mu.Lock()
-	s.connecting = false
-	s.connected = true
+	// Re-check: a concurrent StopTunnel may have run while the proxy was being
+	// enabled. In that case undo our change so nothing stays pointing at a dead
+	// 127.0.0.1 port.
+	if s.state != stateConnecting {
+		s.mu.Unlock()
+		_ = sysproxy.DisableSystemProxy()
+		engine.Stop()
+		return nil
+	}
+	s.state = stateConnected
 	s.lastTrafficTime = time.Now()
 	r, w, _ := traffic.GetTotals()
 	s.lastTotalBytes = (r + w) * 1024 * 1024
@@ -211,13 +258,8 @@ func (s *AppService) StartTunnel() error {
 		s.onStatusChange(true, "CONECTADO")
 	}
 
-	// Auto check quota if enabled
-	if cfg.AutoCheckQuota {
-		go func() {
-			time.Sleep(1 * time.Second)
-			_, _ = s.CheckQuota()
-		}()
-	}
+	s.startPingProbe(cfg)
+	s.startQuotaTimer(cfg)
 
 	return nil
 }
@@ -225,14 +267,17 @@ func (s *AppService) StartTunnel() error {
 // StopTunnel stops the tunnel and restores network routes and proxy settings
 func (s *AppService) StopTunnel() error {
 	s.mu.Lock()
-	if !s.connected && !s.connecting {
+	if s.state == stateIdle || s.state == stateStopping {
 		s.mu.Unlock()
 		return nil
 	}
 	engine := s.tunEngine
+	s.state = stateStopping
 	s.mu.Unlock()
 
 	s.AddLog("TÚNEL", "Deteniendo túnel y restaurando configuraciones...")
+	s.stopPingProbe()
+	s.stopQuotaTimer()
 	_ = sysproxy.DisableSystemProxy()
 
 	if engine != nil {
@@ -240,11 +285,12 @@ func (s *AppService) StopTunnel() error {
 	}
 
 	s.mu.Lock()
-	s.connected = false
-	s.connecting = false
+	s.state = stateIdle
 	s.tunEngine = nil
 	s.lastSpeedMBs = 0
 	s.mu.Unlock()
+
+	traffic.SetPing(0)
 
 	s.AddLog("TÚNEL", "✓ Desconectado. Proxy de sistema deshabilitado.")
 	if s.onStatusChange != nil {
@@ -253,35 +299,132 @@ func (s *AppService) StopTunnel() error {
 	return nil
 }
 
+// startPingProbe measures the RTT to the proxy in the background. The UI polls
+// GetTrafficStats every second; opening a TCP connection there would hammer
+// Squid with a new socket per tick.
+func (s *AppService) startPingProbe(cfg *config.Config) {
+	s.stopPingProbe()
+	if cfg == nil || cfg.ProxyHost == "" || cfg.ProxyPort <= 0 {
+		return
+	}
+
+	target := net.JoinHostPort(cfg.ProxyHost, strconv.Itoa(cfg.ProxyPort))
+	ctx, cancel := context.WithCancel(context.Background())
+
+	s.mu.Lock()
+	s.pingCancel = cancel
+	s.mu.Unlock()
+
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			start := time.Now()
+			c, err := net.DialTimeout("tcp", target, 2*time.Second)
+			if err == nil {
+				traffic.SetPing(time.Since(start).Milliseconds())
+				_ = c.Close()
+			} else {
+				// Keep the last good RTT only until the next successful probe;
+				// zero tells the UI "unknown" instead of a stale value.
+				traffic.SetPing(0)
+			}
+
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+}
+
+// stopPingProbe cancels the background RTT measurement, if any.
+func (s *AppService) stopPingProbe() {
+	s.mu.Lock()
+	cancel := s.pingCancel
+	s.pingCancel = nil
+	s.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+// startQuotaTimer runs CheckQuota on the interval configured by
+// quota_check_interval_min (the setting used to be ignored: only a single
+// check ran one second after connecting).
+func (s *AppService) startQuotaTimer(cfg *config.Config) {
+	s.stopQuotaTimer()
+	if cfg == nil || !cfg.AutoCheckQuota {
+		return
+	}
+
+	interval := time.Duration(cfg.QuotaCheckIntervalMin) * time.Minute
+	if interval <= 0 {
+		interval = 15 * time.Minute
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	s.mu.Lock()
+	s.quotaCancel = cancel
+	s.mu.Unlock()
+
+	go func() {
+		// Give the tunnel a moment to settle before the first query.
+		select {
+		case <-time.After(1 * time.Second):
+		case <-ctx.Done():
+			return
+		}
+		_, _ = s.CheckQuota()
+
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				_, _ = s.CheckQuota()
+			}
+		}
+	}()
+}
+
+// stopQuotaTimer cancels the periodic quota check, if any.
+func (s *AppService) stopQuotaTimer() {
+	s.mu.Lock()
+	cancel := s.quotaCancel
+	s.quotaCancel = nil
+	s.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
 // IsConnected returns connection status
 func (s *AppService) IsConnected() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.connected
+	return s.state == stateConnected
 }
 
 // GetTrafficStats returns real-time bytes read/written, speed in MB/s, and proxy ping
 func (s *AppService) GetTrafficStats() TrafficStats {
 	s.mu.Lock()
-	conn := s.connected
-	cfg := s.cfg
+	conn := s.state == stateConnected
 	s.mu.Unlock()
 
 	r, w, tot := traffic.GetTotals()
 	ping := int64(0)
 	speed := float64(0)
 
-	if conn && cfg != nil {
-		start := time.Now()
-		targetAddr := net.JoinHostPort(cfg.ProxyHost, strconv.Itoa(cfg.ProxyPort))
-		c, err := net.DialTimeout("tcp", targetAddr, 1000*time.Millisecond)
-		if err == nil {
-			ping = time.Since(start).Milliseconds()
-			traffic.SetPing(ping)
-			c.Close()
-		} else {
-			ping = traffic.GetPing()
-		}
+	if conn {
+		// RTT comes from the background prober: GetTrafficStats is polled every
+		// second by the UI, so dialing here would open a TCP connection to Squid
+		// on every tick.
+		ping = traffic.GetPing()
 
 		s.mu.Lock()
 		now := time.Now()
@@ -404,15 +547,17 @@ func (s *AppService) CheckHotspotCapability() (string, error) {
 
 // ToggleForceOfflineHotspot enables or disables local hotspot without internet connection requirement.
 // Includes automated rollback if execution or adapter broadcast encounters an error.
+//
+// IMPORTANT: this method must never hold s.mu while calling AddLog or while running
+// external commands. AddLog acquires the same non-reentrant sync.Mutex, so the
+// previous implementation deadlocked on the very first log line and froze every
+// later call (GetTrafficStats, IsConnected, ...) for the whole application.
 func (s *AppService) ToggleForceOfflineHotspot(enable bool) HotspotToggleResult {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if enable {
 		s.AddLog("HOTSPOT", "Activando Hotspot forzado sin internet (Bypass NCSI / SoftAP)...")
 		err := network.EnableForceOfflineHotspot("UniTunnel_UCI", "unitunnel2026")
 		if err != nil {
-			s.hotspotForced = false
+			s.setHotspotForced(false)
 			s.AddLog("HOTSPOT", fmt.Sprintf("Fallo en activación: %v. Se ejecutó rollback automático.", err))
 			return HotspotToggleResult{
 				Success: false,
@@ -420,7 +565,7 @@ func (s *AppService) ToggleForceOfflineHotspot(enable bool) HotspotToggleResult 
 				Enabled: false,
 			}
 		}
-		s.hotspotForced = true
+		s.setHotspotForced(true)
 		s.AddLog("HOTSPOT", "✓ Hotspot forzado activo (SSID: UniTunnel_UCI | Clave: unitunnel2026). Compartición offline habilitada.")
 		return HotspotToggleResult{
 			Success: true,
@@ -431,7 +576,7 @@ func (s *AppService) ToggleForceOfflineHotspot(enable bool) HotspotToggleResult 
 
 	s.AddLog("HOTSPOT", "Deteniendo difusión de Hotspot forzado y restaurando adaptador...")
 	err := network.DisableForceOfflineHotspot()
-	s.hotspotForced = false
+	s.setHotspotForced(false)
 	if err != nil {
 		s.AddLog("HOTSPOT", fmt.Sprintf("Aviso al desactivar Hotspot: %v", err))
 	} else {
@@ -444,10 +589,16 @@ func (s *AppService) ToggleForceOfflineHotspot(enable bool) HotspotToggleResult 
 	}
 }
 
+// setHotspotForced updates the hotspot flag without keeping the lock while logging.
+func (s *AppService) setHotspotForced(forced bool) {
+	s.mu.Lock()
+	s.hotspotForced = forced
+	s.mu.Unlock()
+}
+
 // IsHotspotForced returns current status of the forced hotspot
 func (s *AppService) IsHotspotForced() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.hotspotForced
 }
-

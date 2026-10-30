@@ -21,10 +21,11 @@ type DoHServer struct {
 	running   bool
 	mu        sync.Mutex
 	client    *http.Client
+	Endpoints []string
 	OnLog     func(string)
 }
 
-func NewDoHServer(dialer *Dialer) *DoHServer {
+func NewDoHServer(dialer *Dialer, endpoints []string) *DoHServer {
 	tr := &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			return dialer.Dial(network, addr)
@@ -37,8 +38,17 @@ func NewDoHServer(dialer *Dialer) *DoHServer {
 		IdleConnTimeout:     90 * time.Second,
 	}
 
+	if len(endpoints) == 0 {
+		// Only used when the caller does not pass cfg.TunDNS.
+		endpoints = []string{
+			"https://1.1.1.1/dns-query",
+			"https://dns.google/dns-query",
+		}
+	}
+
 	return &DoHServer{
-		dialer: dialer,
+		dialer:    dialer,
+		Endpoints: endpoints,
 		client: &http.Client{
 			Transport: tr,
 			Timeout:   5 * time.Second,
@@ -106,10 +116,15 @@ func (s *DoHServer) serve() {
 }
 
 func (s *DoHServer) handleQuery(query []byte, clientAddr net.Addr) {
-	// RFC 8484 DoH query: try Cloudflare (1.1.1.1), fallback to Google (8.8.8.8)
-	reply, err := s.resolveDoH("https://1.1.1.1/dns-query", query)
-	if err != nil || len(reply) == 0 {
-		reply, err = s.resolveDoH("https://dns.google/dns-query", query)
+	// Try every resolver configured in cfg.TunDNS (Cloudflare, Google, ...)
+	// instead of hardcoding them here.
+	var reply []byte
+	var err error
+	for _, endpoint := range s.Endpoints {
+		reply, err = s.resolveDoH(endpoint, query)
+		if err == nil && len(reply) > 0 {
+			break
+		}
 	}
 
 	if err != nil || len(reply) == 0 {

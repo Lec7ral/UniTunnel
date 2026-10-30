@@ -171,22 +171,18 @@ func InspectNetworkState(cfg *config.Config) *DiagnosticReport {
 		}
 	}
 
-	// 5. Inspect Routing Table for tunnel routes (0.0.0.0/1 and 128.0.0.0/1)
-	outRoutes, err := outputHidden("route", "print")
-	if err == nil {
-		routeStr := string(outRoutes)
-		if strings.Contains(routeStr, "0.0.0.0") && strings.Contains(routeStr, "128.0.0.0") {
-			report.Route0Active = true
-		}
-		if strings.Contains(routeStr, "128.0.0.0") && strings.Contains(routeStr, "128.0.0.0") {
-			report.Route128Active = true
-		}
-		report.TunnelRoutesActive = report.Route0Active && report.Route128Active
+	// 5. Inspect the routing table for the split default routes this app adds.
+	// `route print` always contains "0.0.0.0" (the physical default route), so
+	// the old substring check reported tunnel routes even on a clean machine.
+	report.Route0Active = hasRoute("0.0.0.0", "128.0.0.0", "")
+	report.Route128Active = hasRoute("128.0.0.0", "128.0.0.0", "")
+	report.TunnelRoutesActive = report.Route0Active && report.Route128Active
 
-		// Check if routes point to tunGw (10.254.1.1) or tunIP (10.254.1.2)
-		if strings.Contains(routeStr, "10.254.1.1") || strings.Contains(routeStr, "10.254.1.2") {
-			report.StaleRoutesDetected = true
-		}
+	// A leftover ownership file is the authoritative signal that a previous
+	// session crashed before cleaning up. Only routes listed in it are deleted.
+	report.StaleRoutesDetected = pendingRouteState()
+	if !report.StaleRoutesDetected && (hasRoute("0.0.0.0", "128.0.0.0", "10.254.1.1") || hasRoute("128.0.0.0", "128.0.0.0", "10.254.1.1")) {
+		report.IssuesFound = append(report.IssuesFound, "Hay rutas de túnel sin registro de propiedad; no se borrarán automáticamente.")
 	}
 
 	// 6. Check Windows System Proxy

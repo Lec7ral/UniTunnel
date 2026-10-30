@@ -1,4 +1,19 @@
-// Bridge to Wails v3 Go runtime with direct backend invocation and zero random/mock data
+// Bridge to the Wails v3 Go runtime.
+//
+// Every backend call goes through the official `@wailsio/runtime` package and is
+// addressed by its fully qualified Go method name:
+//
+//   "<import path>.<Type>.<Method>"  ->  "unitunnel/pkg/service.AppService.GetConfig"
+//
+// That is exactly the name `wails3 generate bindings` emits for the Go type
+// declared in unitunnel-go/pkg/service (FQN = PkgPath + "." + Type + "." + Method).
+//
+// Design rule: there are NO silent fallbacks and NO fabricated data. If the Wails
+// runtime is not available (for example when the UI is opened in a plain browser
+// with `npm run dev`) or the backend returns an error, the call fails loudly and
+// the UI must show the failure instead of pretending it worked.
+
+import { Call } from '@wailsio/runtime';
 
 export interface UserAccount {
   id: string;
@@ -31,9 +46,6 @@ export interface AppConfig {
   start_minimized: boolean;
   auto_start: boolean;
   always_on_top: boolean;
-  vps_enabled: boolean;
-  vps_server: string;
-  vps_secret: string;
 }
 
 export interface QuotaInfo {
@@ -75,7 +87,10 @@ export interface HotspotToggleResult {
   enabled: boolean;
 }
 
-const STORAGE_KEY_CONFIG = 'unitunnel_config_v3';
+/** Go service registered in main.go via application.NewService(appService). */
+const SERVICE_FQN = 'unitunnel/pkg/service.AppService';
+
+/** Key used only for the local log mirror; configuration is never persisted here. */
 const STORAGE_KEY_LOGS = 'unitunnel_logs_v3';
 
 export const defaultConfig: AppConfig = {
@@ -87,7 +102,7 @@ export const defaultConfig: AppConfig = {
     {
       id: 'default',
       name: 'Cuenta Institucional',
-      username: 'yoanbrp',
+      username: '',
       domain: 'uci.cu',
       password: '',
     },
@@ -107,76 +122,42 @@ export const defaultConfig: AppConfig = {
   start_minimized: false,
   auto_start: false,
   always_on_top: false,
-  vps_enabled: false,
-  vps_server: '',
-  vps_secret: '',
 };
 
-// Universal caller to communicate with Go backend across all Wails v3 invocation patterns
-async function callWailsService<T>(methodName: string, ...args: unknown[]): Promise<T> {
-  if (typeof window === 'undefined') {
-    throw new Error('No window object available');
-  }
-  const win = window as unknown as Record<string, unknown>;
-
-  // Pattern 1: window.go.main.AppService[methodName]
-  const goMain = (win.go as { main?: { AppService?: Record<string, (...a: unknown[]) => Promise<T>> } })?.main?.AppService;
-  if (goMain && typeof goMain[methodName] === 'function') {
-    return await goMain[methodName](...args);
-  }
-
-  // Pattern 2: window.go.service.AppService[methodName]
-  const goService = (win.go as { service?: { AppService?: Record<string, (...a: unknown[]) => Promise<T>> } })?.service?.AppService;
-  if (goService && typeof goService[methodName] === 'function') {
-    return await goService[methodName](...args);
-  }
-
-  // Pattern 3: window.wails.CallService (Wails v3 standard)
-  const wailsObj = win.wails as { CallService?: (s: string, m: string, ...a: unknown[]) => Promise<T>; Call?: (name: string, ...a: unknown[]) => Promise<T> };
-  if (wailsObj && typeof wailsObj.CallService === 'function') {
-    const serviceNames = ['service.AppService', 'AppService', 'main.AppService', 'service/AppService'];
-    for (const sName of serviceNames) {
-      try {
-        return await wailsObj.CallService(sName, methodName, ...args);
-      } catch (e: unknown) {
-        const msg = String(e);
-        if (!msg.includes('not found') && !msg.includes('unknown service')) {
-          throw e;
-        }
-      }
-    }
-  }
-
-  // Pattern 4: window.wails.Call
-  if (wailsObj && typeof wailsObj.Call === 'function') {
-    try {
-      return await wailsObj.Call(`service.AppService.${methodName}`, ...args);
-    } catch {
-      return await wailsObj.Call(`AppService.${methodName}`, ...args);
-    }
-  }
-
-  // Pattern 5: window.AppService[methodName]
-  const directService = win.AppService as Record<string, (...a: unknown[]) => Promise<T>>;
-  if (directService && typeof directService[methodName] === 'function') {
-    return await directService[methodName](...args);
-  }
-
-  throw new Error(`Wails AppService.${methodName} not available in runtime`);
-}
-
+/**
+ * True when the page is hosted by an actual Wails desktop host (WebView2 on
+ * Windows). Importing `@wailsio/runtime` alone does not prove that, because the
+ * module is also loaded in a normal browser during development.
+ */
 export function isWailsRuntime(): boolean {
   if (typeof window === 'undefined') return false;
-  const win = window as unknown as Record<string, unknown>;
-  const goObj = win.go as { main?: { AppService?: unknown }; service?: { AppService?: unknown } };
-  const wailsObj = win.wails as { CallService?: unknown; Call?: unknown };
-  return !!(
-    goObj?.main?.AppService ||
-    goObj?.service?.AppService ||
-    wailsObj?.CallService ||
-    wailsObj?.Call ||
-    win.AppService
+  const w = window as unknown as {
+    chrome?: { webview?: { postMessage?: unknown } };
+    webkit?: { messageHandlers?: { external?: { postMessage?: unknown } } };
+  };
+  return Boolean(
+    w.chrome?.webview?.postMessage || w.webkit?.messageHandlers?.external?.postMessage,
   );
+}
+
+function assertRuntime(): void {
+  if (!isWailsRuntime()) {
+    throw new Error(
+      'Runtime de Wails no disponible: ejecuta la aplicación empaquetada (unitunnel.exe), no el navegador de desarrollo.',
+    );
+  }
+}
+
+/** Invokes AppService.<method> on the Go side. Rejects on any backend error. */
+async function callWailsService<T>(method: string, ...args: unknown[]): Promise<T> {
+  assertRuntime();
+  const result = await Call.ByName(`${SERVICE_FQN}.${method}`, ...args);
+  return result as T;
+}
+
+function errorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  return String(err);
 }
 
 class WailsBridge {
@@ -189,19 +170,14 @@ class WailsBridge {
   }
 
   private initLogs() {
-    if (typeof window !== 'undefined') {
-      try {
-        const stored = localStorage.getItem(STORAGE_KEY_LOGS);
-        if (stored) {
-          this.currentLogs = JSON.parse(stored);
-        } else {
-          this.currentLogs = [
-            `[${new Date().toLocaleTimeString()}] [SISTEMA] UniTunnel Wails v3 inicializado en Windows x64.`,
-          ];
-        }
-      } catch {
-        this.currentLogs = [];
-      }
+    if (typeof window === 'undefined') return;
+    try {
+      const stored = localStorage.getItem(STORAGE_KEY_LOGS);
+      this.currentLogs = stored
+        ? JSON.parse(stored)
+        : [`[${new Date().toLocaleTimeString()}] [SISTEMA] UniTunnel Wails v3 inicializado.`];
+    } catch {
+      this.currentLogs = [];
     }
   }
 
@@ -213,7 +189,7 @@ class WailsBridge {
       try {
         localStorage.setItem(STORAGE_KEY_LOGS, JSON.stringify(this.currentLogs));
       } catch {
-        // ignore
+        // Local log mirror is best-effort only.
       }
     }
     this.logListeners.forEach((listener) => listener(this.currentLogs));
@@ -236,68 +212,43 @@ class WailsBridge {
         return backendLogs;
       }
     } catch {
-      // not in wails runtime or call error
+      // Backend unreachable: keep the local mirror.
     }
     return this.currentLogs;
   }
 
   public async clearLogs(): Promise<void> {
-    try {
-      await callWailsService<void>('ClearLogs');
-    } catch {
-      // ignore
-    }
-    this.currentLogs = [
-      `[${new Date().toLocaleTimeString()}] [SISTEMA] Registro limpiado.`,
-    ];
+    await callWailsService<void>('ClearLogs');
+    this.currentLogs = [`[${new Date().toLocaleTimeString()}] [SISTEMA] Registro limpiado.`];
     if (typeof window !== 'undefined') {
       localStorage.setItem(STORAGE_KEY_LOGS, JSON.stringify(this.currentLogs));
     }
     this.logListeners.forEach((listener) => listener(this.currentLogs));
   }
 
+  /**
+   * Reads the configuration from the Go backend (config.json next to the .exe).
+   * Throws if the backend cannot be reached: the UI must not invent settings.
+   */
   public async getConfig(): Promise<AppConfig> {
-    try {
-      const remote = await callWailsService<AppConfig>('GetConfig');
-      if (remote && remote.proxy_host) {
-        this.configCache = remote;
-        return remote;
-      }
-    } catch {
-      // fallback to stored local cache
+    const remote = await callWailsService<AppConfig>('GetConfig');
+    if (!remote) {
+      throw new Error('El backend devolvió una configuración vacía.');
     }
-
-    if (this.configCache) return this.configCache;
-    let loaded: AppConfig = { ...defaultConfig };
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY_CONFIG);
-      if (saved) {
-        loaded = { ...defaultConfig, ...JSON.parse(saved) };
-      }
-    } catch {
-      // ignore
-    }
-    this.configCache = loaded;
-    return loaded;
+    this.configCache = remote;
+    return remote;
   }
 
+  /** Persists the configuration on the Go side. Returns false when it failed. */
   public async saveConfig(cfg: AppConfig): Promise<boolean> {
-    this.configCache = cfg;
-    if (typeof window !== 'undefined') {
-      localStorage.setItem(STORAGE_KEY_CONFIG, JSON.stringify(cfg));
-    }
-
     try {
       await callWailsService<void>('SaveConfig', cfg);
-      this.addLog('CONFIG', 'Ajustes guardados correctamente en config.json.');
+      this.configCache = cfg;
+      this.addLog('CONFIG', 'Ajustes guardados en config.json.');
       return true;
     } catch (err) {
-      if (isWailsRuntime()) {
-        this.addLog('ERROR', `Error guardando en backend Go: ${err}`);
-        return false;
-      }
-      this.addLog('CONFIG', 'Ajustes actualizados en config.json.');
-      return true;
+      this.addLog('ERROR', `No se pudo guardar la configuración: ${errorMessage(err)}`);
+      return false;
     }
   }
 
@@ -307,175 +258,124 @@ class WailsBridge {
       await callWailsService<void>('StartTunnel');
       await this.fetchLogs();
       return { success: true };
-    } catch (err: unknown) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      this.addLog('ERROR', `Fallo iniciando túnel: ${errMsg}`);
-      return { success: false, error: errMsg };
+    } catch (err) {
+      const msg = errorMessage(err);
+      this.addLog('ERROR', `Fallo iniciando túnel: ${msg}`);
+      return { success: false, error: msg };
     }
   }
 
-  public async stopTunnel(): Promise<{ success: boolean }> {
+  public async stopTunnel(): Promise<{ success: boolean; error?: string }> {
     try {
       this.addLog('TÚNEL', 'Deteniendo túnel y restaurando configuraciones...');
       await callWailsService<void>('StopTunnel');
       await this.fetchLogs();
       return { success: true };
     } catch (err) {
-      console.warn('Error llamando a StopTunnel:', err);
+      const msg = errorMessage(err);
+      this.addLog('ERROR', `Fallo deteniendo túnel: ${msg}`);
+      return { success: false, error: msg };
     }
-    this.addLog('TÚNEL', '✓ Desconectado.');
-    return { success: true };
   }
 
   public async isConnected(): Promise<boolean> {
-    try {
-      return await callWailsService<boolean>('IsConnected');
-    } catch {
-      return false;
-    }
+    return callWailsService<boolean>('IsConnected');
   }
 
   public async getTrafficStats(): Promise<TrafficStats> {
-    try {
-      const stats = await callWailsService<TrafficStats>('GetTrafficStats');
-      if (stats) {
-        return stats;
-      }
-    } catch {
-      // ignore
-    }
-    return {
-      connected: false,
-      speed_mbs: 0,
-      read_mb: 0,
-      write_mb: 0,
-      total_mb: 0,
-      ping_ms: 0,
-    };
+    const stats = await callWailsService<TrafficStats>('GetTrafficStats');
+    return stats ?? { connected: false, speed_mbs: 0, read_mb: 0, write_mb: 0, total_mb: 0, ping_ms: 0 };
   }
 
+  /**
+   * Applies a network mode. The Go service already persists the mode in
+   * config.json, so there is no second SaveConfig round-trip here.
+   */
   public async applyNetworkMode(mode: NetworkMode): Promise<boolean> {
-    const cfg = await this.getConfig();
-    cfg.network_mode = mode;
-    await this.saveConfig(cfg);
-
     try {
       await callWailsService<void>('SetNetworkMode', mode);
+      if (this.configCache) this.configCache = { ...this.configCache, network_mode: mode };
       await this.fetchLogs();
       return true;
     } catch (err) {
-      this.addLog('ERROR', `Error aplicando modo de red en Windows: ${err}`);
+      this.addLog('ERROR', `Error aplicando modo de red en Windows: ${errorMessage(err)}`);
       return false;
     }
   }
 
   public async setAlwaysOnTop(pinned: boolean): Promise<boolean> {
-    const cfg = await this.getConfig();
-    cfg.always_on_top = pinned;
-    await this.saveConfig(cfg);
-
     try {
       await callWailsService<void>('SetAlwaysOnTop', pinned);
+      if (this.configCache) this.configCache = { ...this.configCache, always_on_top: pinned };
       return true;
     } catch (err) {
-      console.warn('Error llamando a SetAlwaysOnTop en Wails:', err);
+      this.addLog('ERROR', `No se pudo cambiar "Siempre visible": ${errorMessage(err)}`);
+      return false;
     }
-
-    if (pinned) {
-      this.addLog('SISTEMA', 'Ventana fijada al frente (Siempre visible sobre otras apps).');
-    } else {
-      this.addLog('SISTEMA', 'Ventana liberada (Comportamiento estándar).');
-    }
-    return true;
   }
 
   public async getInterfaces(): Promise<InterfaceStatus[]> {
-    try {
-      const list = await callWailsService<InterfaceStatus[]>('GetInterfaces');
-      if (Array.isArray(list)) {
-        return list;
-      }
-    } catch (err) {
-      console.warn('Error obteniendo interfaces de Go:', err);
-    }
-    return [];
+    return callWailsService<InterfaceStatus[]>('GetInterfaces');
   }
 
+  /**
+   * Queries cuota.uci.cu through the backend. A failure is reported as an
+   * explicit QuotaInfo with success=false, never as invented numbers.
+   */
   public async fetchQuota(account?: UserAccount): Promise<QuotaInfo> {
     try {
-      const realQuota = await callWailsService<QuotaInfo>('CheckQuota');
-      if (realQuota && (realQuota.allocated_mb > 0 || realQuota.remaining_mb > 0 || realQuota.error_message)) {
+      const info = await callWailsService<QuotaInfo>('CheckQuota');
+      if (info) {
         await this.fetchLogs();
-        return realQuota;
+        return info;
       }
+      throw new Error('El backend devolvió una cuota vacía.');
     } catch (err) {
-      console.warn('Error en CheckQuota Go:', err);
+      const msg = errorMessage(err);
+      this.addLog('ERROR', `Error consultando cuota: ${msg}`);
+      return {
+        username: account?.username ?? '',
+        allocated_mb: 0,
+        used_mb: 0,
+        remaining_mb: 0,
+        percent_used: 0,
+        clamped_percent: 0,
+        is_overdraft: false,
+        overdraft_mb: 0,
+        status_level: 'normal',
+        last_updated: 'Sin conexión',
+        success: false,
+        error_message: msg,
+      };
     }
-
-    const user = account?.username || '';
-    return {
-      username: user,
-      allocated_mb: 0,
-      used_mb: 0,
-      remaining_mb: 0,
-      percent_used: 0,
-      clamped_percent: 0,
-      is_overdraft: false,
-      overdraft_mb: 0,
-      status_level: 'normal',
-      last_updated: 'Sin conexión',
-      success: false,
-      error_message: 'No se pudo contactar con cuota.uci.cu (Verifica la conexión al proxy)',
-    };
   }
 
+  /** Runs the real Wi-Fi Direct / SoftAP diagnostic. Throws on failure. */
   public async checkHotspotCapability(): Promise<string> {
-    try {
-      const res = await callWailsService<string>('CheckHotspotCapability');
-      if (res) {
-        await this.fetchLogs();
-        return res;
-      }
-    } catch (err) {
-      console.warn('Error llamando a CheckHotspotCapability:', err);
-    }
-    return `=== DIAGNÓSTICO WI-FI DIRECT / SOFTAP (LOCAL) ===
-[Adaptadores Wi-Fi Detectados]
- • Realtek RTL8821CE 802.11ac PCIe Adapter (Nombre: Wi-Fi | Estado: Listo)
-[Soporte de Red Hospedada (Hosted Network)]
- • Red hospedada admitida (Hosted network): Sí
- • Microsoft Wi-Fi Direct Virtual Adapter: Compatible / Disponible
- • Estado: Listo para difusión de punto de acceso local sin conexión WAN (Bypass NCSI listo).`;
+    const report = await callWailsService<string>('CheckHotspotCapability');
+    await this.fetchLogs();
+    return report;
   }
 
+  /** Toggles the forced-offline hotspot and returns the backend verdict. */
   public async toggleForceOfflineHotspot(enable: boolean): Promise<HotspotToggleResult> {
     try {
       const res = await callWailsService<HotspotToggleResult>('ToggleForceOfflineHotspot', enable);
-      if (res) {
-        await this.fetchLogs();
-        return res;
-      }
+      await this.fetchLogs();
+      return res;
     } catch (err) {
-      console.warn('Error llamando a ToggleForceOfflineHotspot:', err);
+      const msg = errorMessage(err);
+      this.addLog('ERROR', `Fallo alternando el hotspot: ${msg}`);
+      return {
+        success: false,
+        message: `No se pudo cambiar el hotspot: ${msg}`,
+        enabled: false,
+      };
     }
-
-    // Fallback if not running in production Windows binary
-    this.addLog('HOTSPOT', enable ? 'Forzando difusión de Hotspot sin internet (SoftAP)...' : 'Deteniendo Hotspot forzado...');
-    return {
-      success: true,
-      message: enable
-        ? 'Hotspot offline activado con éxito. Red "UniTunnel_UCI" disponible (Clave: unitunnel2026).'
-        : 'Hotspot detenido y modo restaurado correctamente.',
-      enabled: enable,
-    };
   }
 
   public async isHotspotForced(): Promise<boolean> {
-    try {
-      return await callWailsService<boolean>('IsHotspotForced');
-    } catch {
-      return false;
-    }
+    return callWailsService<boolean>('IsHotspotForced');
   }
 }
 

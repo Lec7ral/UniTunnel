@@ -3,9 +3,14 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
+
+	"unitunnel/pkg/appstate"
 )
 
 type UserAccount struct {
@@ -53,11 +58,6 @@ type Config struct {
 	StartMinimized bool `json:"start_minimized"`
 	AutoStart      bool `json:"auto_start"`
 	AlwaysOnTop    bool `json:"always_on_top"`
-
-	// Optional VPS Bridge
-	VPSEnabled bool   `json:"vps_enabled"`
-	VPSServer  string `json:"vps_server"`
-	VPSSecret  string `json:"vps_secret"`
 }
 
 func DefaultConfig() *Config {
@@ -91,13 +91,82 @@ func DefaultConfig() *Config {
 			"192.168.0.0/16",
 		},
 		NetworkMode:    "uci_cable",
-		VPSEnabled:     false,
-		VPSServer:      "",
-		VPSSecret:      "",
 		StartMinimized: false,
 		AutoStart:      false,
 		AlwaysOnTop:    false,
 	}
+}
+
+// Validate rejects configurations that would leave the machine in a broken
+// state (unusable ports, malformed CIDRs, ...). It runs before config.json is
+// written, so the UI can report the exact problem instead of storing values
+// that break the next connection.
+func (c *Config) Validate() error {
+	if strings.TrimSpace(c.ProxyHost) == "" {
+		return fmt.Errorf("el servidor proxy no puede estar vacío")
+	}
+	if c.ProxyPort < 1 || c.ProxyPort > 65535 {
+		return fmt.Errorf("puerto del proxy fuera de rango (1-65535): %d", c.ProxyPort)
+	}
+
+	for _, p := range []struct {
+		name string
+		port int
+	}{
+		{"SOCKS5 local", c.LocalSocksPort},
+		{"HTTP local", c.LocalHTTPPort},
+	} {
+		if p.port < 1 || p.port > 65535 {
+			return fmt.Errorf("puerto %s fuera de rango (1-65535): %d", p.name, p.port)
+		}
+	}
+	if c.LocalSocksPort == c.LocalHTTPPort {
+		return fmt.Errorf("el puerto SOCKS5 y el HTTP local no pueden ser el mismo (%d)", c.LocalSocksPort)
+	}
+
+	if c.CaptureMode != "" && c.CaptureMode != "tun" && c.CaptureMode != "system_proxy" {
+		return fmt.Errorf("modo de captura desconocido: %q", c.CaptureMode)
+	}
+
+	if c.TunIPv4 != "" {
+		if ip := net.ParseIP(c.TunIPv4); ip == nil || ip.To4() == nil {
+			return fmt.Errorf("dirección IPv4 del adaptador Wintun inválida: %q", c.TunIPv4)
+		}
+	}
+	if c.TunMask != "" {
+		if ip := net.ParseIP(c.TunMask); ip == nil || ip.To4() == nil {
+			return fmt.Errorf("máscara del adaptador Wintun inválida: %q", c.TunMask)
+		}
+	}
+
+	for _, cidr := range c.BypassRoutes {
+		if _, _, err := net.ParseCIDR(strings.TrimSpace(cidr)); err != nil {
+			return fmt.Errorf("ruta de bypass inválida %q: %w", cidr, err)
+		}
+	}
+
+	if strings.TrimSpace(c.QuotaURL) != "" {
+		u, err := url.Parse(c.QuotaURL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return fmt.Errorf("URL del portal de cuota inválida: %q", c.QuotaURL)
+		}
+	}
+	if c.QuotaCheckIntervalMin < 0 {
+		return fmt.Errorf("el intervalo de consulta de cuota no puede ser negativo: %d", c.QuotaCheckIntervalMin)
+	}
+
+	seen := make(map[string]struct{}, len(c.Accounts))
+	for _, acc := range c.Accounts {
+		if strings.TrimSpace(acc.ID) == "" {
+			return fmt.Errorf("hay una cuenta sin identificador")
+		}
+		if _, dup := seen[acc.ID]; dup {
+			return fmt.Errorf("identificador de cuenta duplicado: %s", acc.ID)
+		}
+		seen[acc.ID] = struct{}{}
+	}
+
+	return nil
 }
 
 func (c *Config) GetActiveAccount() *UserAccount {
@@ -182,6 +251,9 @@ func LoadConfig() (*Config, error) {
 	path := GetConfigPath()
 	data, err := os.ReadFile(path)
 	if err != nil {
+		if !os.IsNotExist(err) {
+			return DefaultConfig(), fmt.Errorf("no se pudo leer %s: %w", path, err)
+		}
 		cfg := DefaultConfig()
 		_ = SaveConfig(cfg)
 		return cfg, nil
@@ -189,7 +261,13 @@ func LoadConfig() (*Config, error) {
 
 	cfg := DefaultConfig()
 	if err := json.Unmarshal(data, cfg); err != nil {
-		return DefaultConfig(), err
+		// Never silently replace a broken config with defaults: keep a copy of
+		// the original so the user (and support) can recover credentials.
+		backup := fmt.Sprintf("%s.corrupt-%s", path, time.Now().Format("20060102-150405"))
+		if werr := os.WriteFile(backup, data, 0o600); werr != nil {
+			return DefaultConfig(), fmt.Errorf("config.json corrupto (%v) y no se pudo crear copia de seguridad: %w", err, werr)
+		}
+		return DefaultConfig(), fmt.Errorf("config.json corrupto (%v); copia guardada en %s", err, backup)
 	}
 	if len(cfg.Accounts) == 0 {
 		cfg.Accounts = DefaultConfig().Accounts
@@ -207,5 +285,8 @@ func SaveConfig(cfg *Config) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0644)
+	// 0600: config.json holds proxy credentials in clear text, so it must not be
+	// readable by other users on the machine. The write is atomic so a crash
+	// cannot leave a truncated (and therefore corrupt) configuration behind.
+	return appstate.WriteFileAtomic(path, data, 0o600)
 }

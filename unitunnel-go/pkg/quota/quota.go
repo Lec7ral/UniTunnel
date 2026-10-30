@@ -48,8 +48,21 @@ func FetchUCIQuota(portalURL, username, password string, proxyURL *url.URL) (*Qu
 		portalURL = "https://cuota.uci.cu/"
 	}
 
+	parsedURL, err := url.Parse(portalURL)
+	if err != nil {
+		return nil, fmt.Errorf("URL de cuota inválida: %w", err)
+	}
+	hasCredentials := username != "" && password != ""
+	if hasCredentials && parsedURL.Scheme != "https" {
+		// Basic auth over plain HTTP would put the password on the wire in clear
+		// text for anyone on the LAN. Refuse instead of downgrading silently.
+		return nil, fmt.Errorf("cuota_url debe usar https:// para enviar credenciales (actual: %s)", parsedURL.Scheme)
+	}
+
 	transport := &http.Transport{
-		TLSClientConfig:       &tls.Config{InsecureSkipVerify: true},
+		// Certificate verification stays ON: the old InsecureSkipVerify made the
+		// quota check trivially MITM-able.
+		TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
 		ResponseHeaderTimeout: 8 * time.Second,
 		TLSHandshakeTimeout:   5 * time.Second,
 	}
@@ -85,24 +98,9 @@ func FetchUCIQuota(portalURL, username, password string, proxyURL *url.URL) (*Qu
 
 	resp, err := client.Do(req)
 	if err != nil {
-		// If HTTPS failed (e.g. self-signed cert or strict timeout), attempt plain HTTP on intranet
-		if strings.HasPrefix(portalURL, "https://") {
-			altURL := "http://" + strings.TrimPrefix(portalURL, "https://")
-			reqAlt, _ := http.NewRequest("GET", altURL, nil)
-			if username != "" && password != "" {
-				authStr := base64.StdEncoding.EncodeToString([]byte(username + ":" + password))
-				reqAlt.Header.Set("Authorization", "Basic "+authStr)
-			}
-			respAlt, errAlt := client.Do(reqAlt)
-			if errAlt == nil {
-				resp = respAlt
-				err = nil
-			} else {
-				return nil, fmt.Errorf("no se pudo contactar con cuota.uci.cu: %w", err)
-			}
-		} else {
-			return nil, fmt.Errorf("no se pudo contactar con cuota.uci.cu: %w", err)
-		}
+		// No plain-HTTP downgrade: a failed TLS handshake must surface as an
+		// error, not as a retry that leaks the Authorization header in clear.
+		return nil, fmt.Errorf("no se pudo contactar con %s: %w", portalURL, err)
 	}
 	defer resp.Body.Close()
 

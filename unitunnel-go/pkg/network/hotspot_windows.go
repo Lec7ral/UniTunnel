@@ -28,7 +28,7 @@ func CheckHotspotCapability() (string, error) {
 
 		[void]$sb.AppendLine("")
 		[void]$sb.AppendLine("[Soporte de Red Hospedada (Hosted Network)]")
-		$hostedLine = ($drv -split "`r?`n" | Where-Object { $_ -like "*Red hospedada admitida*" -or $_ -like "*Hosted network supported*" })
+		$hostedLine = ($drv -split "\r?\n" | Where-Object { $_ -like "*Red hospedada admitida*" -or $_ -like "*Hosted network supported*" })
 		if ($hostedLine) {
 			[void]$sb.AppendLine(" • " + $hostedLine.Trim())
 		} else {

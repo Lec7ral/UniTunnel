@@ -54,6 +54,11 @@ func runPowerShell(script string) (string, error) {
 func ApplyNetworkMode(mode string) error {
 	switch mode {
 	case string(ModeUCICable):
+		// Save the user's original metrics before touching them, so "direct"
+		// can restore them instead of guessing "automatic".
+		if err := persistMetricsStateIfMissing(); err != nil {
+			return err
+		}
 		// Prioritize wired Ethernet adapters over Wi-Fi
 		psScript := `
 			Get-NetIPInterface -AddressFamily IPv4 | Where-Object { 
@@ -74,6 +79,9 @@ func ApplyNetworkMode(mode string) error {
 		return err
 
 	case string(ModeWiFiMobile):
+		if err := persistMetricsStateIfMissing(); err != nil {
+			return err
+		}
 		// Prioritize Wi-Fi / Hotspot adapters over Ethernet
 		psScript := `
 			Get-NetIPInterface -AddressFamily IPv4 | Where-Object { 
@@ -94,7 +102,14 @@ func ApplyNetworkMode(mode string) error {
 		return err
 
 	case string(ModeDirect):
-		// Restore Windows automatic metrics
+		// Restore the exact metrics captured before the first mode switch.
+		// Only when no snapshot exists (first run, or already restored) fall
+		// back to asking Windows to recompute automatic metrics.
+		if restored, err := RestoreMetricsStateIfAny(); err != nil {
+			return err
+		} else if restored {
+			return nil
+		}
 		psScript := `
 			Get-NetIPInterface -AddressFamily IPv4 | Set-NetIPInterface -AutomaticMetric Enabled -ErrorAction SilentlyContinue
 		`
@@ -118,18 +133,28 @@ func GetInterfaces() ([]InterfaceStatus, error) {
 
 	lines := strings.Split(out, "\n")
 	var result []InterfaceStatus
-	for i, line := range lines {
+	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		if i == 0 || line == "" {
+		if line == "" || strings.HasPrefix(strings.Trim(line, `"`), "InterfaceAlias") {
 			continue // skip header or empty
 		}
 		parts := strings.Split(line, ",")
 		if len(parts) >= 4 {
 			cleanAlias := strings.Trim(parts[0], `"`)
+			var index int
+			fmt.Sscanf(strings.Trim(parts[1], `"`), "%d", &index)
 			var metric int
 			fmt.Sscanf(strings.Trim(parts[2], `"`), "%d", &metric)
-			autoMetric := strings.Contains(strings.ToLower(parts[3]), "true") || strings.Contains(strings.ToLower(parts[3]), "1")
-			
+			// Get-NetIPInterface reports AutomaticMetric as Enabled/Disabled,
+			// not as a boolean: the old check left AutoMetric always false.
+			autoMetricRaw := strings.ToLower(strings.Trim(strings.TrimSpace(parts[3]), `"`))
+			autoMetric := autoMetricRaw == "enabled" || autoMetricRaw == "true" || autoMetricRaw == "1"
+
+			status := "Unknown"
+			if len(parts) >= 5 {
+				status = strings.Trim(parts[4], `"`)
+			}
+
 			media := "other"
 			aliasLower := strings.ToLower(cleanAlias)
 			if strings.Contains(aliasLower, "wi-fi") || strings.Contains(aliasLower, "wireless") || strings.Contains(aliasLower, "wlan") {
@@ -139,11 +164,12 @@ func GetInterfaces() ([]InterfaceStatus, error) {
 			}
 
 			result = append(result, InterfaceStatus{
-				Alias:      cleanAlias,
-				Metric:     metric,
-				AutoMetric: autoMetric,
-				MediaType:  media,
-				Status:     "Connected",
+				Alias:          cleanAlias,
+				InterfaceIndex: index,
+				Metric:         metric,
+				AutoMetric:     autoMetric,
+				MediaType:      media,
+				Status:         status,
 			})
 		}
 	}

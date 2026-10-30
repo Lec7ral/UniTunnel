@@ -2,6 +2,7 @@ package tun
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 
 	"unitunnel/pkg/config"
@@ -27,6 +28,30 @@ func NewEngine(cfg *config.Config, onLog func(string), onAuthError func(error)) 
 		OnLog:       onLog,
 		OnAuthError: onAuthError,
 	}
+}
+
+// dohEndpoints turns cfg.TunDNS ("1.1.1.1,8.8.8.8") into RFC 8484 endpoints
+// (https://1.1.1.1/dns-query, ...), so the resolver list lives in config.json
+// instead of being hardcoded inside the DoH server.
+func dohEndpoints(cfg *config.Config) []string {
+	raw := cfg.TunDNS
+	if strings.TrimSpace(raw) == "" {
+		raw = "1.1.1.1,8.8.8.8"
+	}
+
+	var endpoints []string
+	for _, part := range strings.Split(raw, ",") {
+		host := strings.TrimSpace(part)
+		if host == "" {
+			continue
+		}
+		if strings.HasPrefix(host, "https://") || strings.HasPrefix(host, "http://") {
+			endpoints = append(endpoints, host)
+			continue
+		}
+		endpoints = append(endpoints, fmt.Sprintf("https://%s/dns-query", host))
+	}
+	return endpoints
 }
 
 func (e *Engine) Start() error {
@@ -89,12 +114,24 @@ func (e *Engine) Start() error {
 	}
 
 	// 4. Start RFC 8484 DNS-over-HTTPS bridge on UDP port 53
-	// This intercepts UDP DNS lookups from Windows apps and resolves them through Squid (HTTPS 443)
-	e.dohSrv = tunnel.NewDoHServer(e.dialer)
+	// This intercepts UDP DNS lookups from Windows apps and resolves them through Squid (HTTPS 443).
+	// In TUN mode DNS is not optional: without a working local resolver every
+	// name lookup fails, so abort and roll back the already-started listeners
+	// instead of leaving the machine half-configured.
+	e.dohSrv = tunnel.NewDoHServer(e.dialer, dohEndpoints(e.cfg))
 	e.dohSrv.OnLog = e.OnLog
 	if err := e.dohSrv.Start("0.0.0.0:53"); err != nil {
+		e.dohSrv = nil
+		e.httpSrv.Stop()
+		e.httpSrv = nil
+		e.socksSrv.Stop()
+		e.socksSrv = nil
+
+		if e.cfg.CaptureMode == "tun" {
+			return fmt.Errorf("no se pudo iniciar el DNS local en UDP 53 (puerto ocupado por otro servicio): %w", err)
+		}
 		if e.OnLog != nil {
-			e.OnLog(fmt.Sprintf("ℹ Aviso DoH DNS: %v (se utilizará resolución secundaria)", err))
+			e.OnLog(fmt.Sprintf("⚠ Aviso DoH DNS: %v. En modo Proxy del Sistema los nombres los resuelve el propio proxy.", err))
 		}
 	} else if e.OnLog != nil {
 		e.OnLog("✓ Servidor DNS DoH (RFC 8484) activo en UDP 53. Nombres resueltos por HTTPS.")

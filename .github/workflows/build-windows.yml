@@ -16,10 +16,12 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      # Single source of truth for the Go version: the `go` directive in
+      # unitunnel-go/go.mod.
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.27.3'
+          go-version-file: unitunnel-go/go.mod
           check-latest: true
 
       - name: Set up Node.js
@@ -28,11 +30,26 @@ jobs:
           node-version: '20'
           cache: 'npm'
 
+      - name: Install Frontend Dependencies
+        run: npm ci --include=optional
+
+      # Non-blocking on purpose: `vite build` does not type-check, so a type
+      # error must not prevent producing a working .exe on the first run. Make
+      # this blocking again once the report is clean.
+      - name: Type Check (report only)
+        continue-on-error: true
+        run: npm run lint
+
+      # Vite writes straight into unitunnel-go/dist, which is what
+      # `//go:embed all:dist` (unitunnel-go/main.go) embeds.
       - name: Build React Frontend
+        run: npm run build
+
+      - name: Verify Frontend Output
         run: |
-          npm ci --include=optional
-          npm run build
-          Write-Host "React frontend compiled to dist/ directory."
+          if (!(Test-Path "unitunnel-go\dist\index.html")) {
+            throw "unitunnel-go/dist/index.html is missing: the Go binary would embed an empty frontend."
+          }
 
       - name: Download Wintun Driver DLL (x64)
         run: |
@@ -53,11 +70,8 @@ jobs:
           Remove-Item -Recurse -Force "dist-release\tun2socks_extracted", "dist-release\tun2socks.zip"
           Write-Host "Tun2socks.exe placed into release folder."
 
-      - name: Install Wails v3 CLI
-        run: |
-          Write-Host "Installing Wails v3 CLI..."
-          go install github.com/wailsapp/wails/v3/cmd/wails3@latest
-
+      # The .syso is committed, so windres is only a refresh. Keep it
+      # best-effort: a missing MinGW on the runner must not break the build.
       - name: Compile Windows Resource (Icon & UAC Manifest)
         working-directory: ./unitunnel-go
         run: |
@@ -66,20 +80,60 @@ jobs:
               Write-Host "Compiling Windows resource object with windres..."
               windres -i unitunnel.rc -O coff -o rsrc_windows_amd64.syso
             }
+          } else {
+            Write-Host "windres not found; using the committed rsrc_windows_amd64.syso."
           }
+
+      # The repository does not ship go.sum yet. The runner has open internet,
+      # so generate it here and upload it: download the `go-sum` artifact and
+      # commit unitunnel-go/go.sum. After that this step is a no-op and the
+      # build is fully reproducible.
+      - name: Prepare Go Modules
+        working-directory: ./unitunnel-go
+        run: |
+          if (!(Test-Path "go.sum")) {
+            Write-Host "::warning::unitunnel-go/go.sum is missing. Generating it with 'go mod tidy'. Download the 'go-sum' artifact and commit it."
+            go mod tidy
+          }
+          go mod download
+
+      - name: Upload go.sum
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-sum
+          path: unitunnel-go/go.sum
+          if-no-files-found: ignore
+          retention-days: 7
+
+      # Non-blocking on purpose: this is the first real compile of the project,
+      # so collect every diagnostic in one run instead of stopping at the first.
+      - name: Vet (report only)
+        continue-on-error: true
+        working-directory: ./unitunnel-go
+        env:
+          CGO_ENABLED: "1"
+        run: go vet ./...
+
+      # Blocking: a real compile error means the .exe cannot exist.
+      - name: Compile Check
+        working-directory: ./unitunnel-go
+        env:
+          CGO_ENABLED: "1"
+        run: go build ./...
+
+      - name: Tests (report only)
+        continue-on-error: true
+        working-directory: ./unitunnel-go
+        env:
+          CGO_ENABLED: "1"
+        run: go test ./...
 
       - name: Build UniTunnel Go Executable (Wails v3)
         working-directory: ./unitunnel-go
+        env:
+          CGO_ENABLED: "1"
         run: |
-          $env:CGO_ENABLED="1"
-          
-          # Ensure dist directory is accessible for embed FS
-          if (!(Test-Path "dist")) {
-            Copy-Item -Recurse -Path "..\dist" -Destination "dist" -Force
-          }
-          
-          go mod tidy
-          
           Write-Host "Building Wails v3 executable..."
           go build -ldflags="-H windowsgui -s -w" -o ..\dist-release\unitunnel.exe .
           Write-Host "Build complete: dist-release\unitunnel.exe"
@@ -90,7 +144,7 @@ jobs:
           if (Test-Path "unitunnel-go\config.example.json") {
             Copy-Item -Path "unitunnel-go\config.example.json" -Destination "dist-release\config.json" -Force
           }
-          
+
           # Copy icon if available
           if (Test-Path "unitunnel-go\icon.ico") {
             Copy-Item -Path "unitunnel-go\icon.ico" -Destination "dist-release\icon.ico" -Force
@@ -110,29 +164,29 @@ jobs:
             </trustInfo>
           </assembly>
           "@ | Out-File -FilePath "dist-release\unitunnel.exe.manifest" -Encoding utf8
-          
+
           # Create Spanish instruction manual
           @"
           =======================================================
           UniTunnel (Wails v3) - Acceso Universitario para Windows
           =======================================================
-          
+
           REQUISITOS:
           1. Ejecutar SIEMPRE 'unitunnel.exe' como Administrador (clic derecho -> Ejecutar como administrador).
-             Es indispensable para que Windows permita inicializar el adaptador Wintun y las métricas de red.
+             Es indispensable para que Windows permita inicializar el adaptador Wintun y las metricas de red.
           2. Mantener 'wintun.dll' y 'tun2socks.exe' en la misma carpeta que 'unitunnel.exe'.
-          3. 'config.json' se crea o actualiza automáticamente con tus credenciales y servidor proxy (10.0.0.1:8080).
-             ¡Ahora puedes editar absolutamente todos los ajustes directamente desde la ventana del programa!
-          
-          MODOS DE RED RÁPIDOS:
-          - Cable UCI: Activa UniTunnel y asigna prioridad métrica 10 a la interfaz Ethernet.
-          - Datos Móviles / Wi-Fi: Asigna prioridad métrica 10 a la interfaz Wi-Fi (y 100 a Ethernet),
-            permitiendo navegar con el punto de acceso del teléfono SIN tener que desconectar el cable de red.
-          - Directo: Restaura las métricas automáticas nativas de Windows.
-          
+          3. 'config.json' se crea o actualiza automaticamente con tus credenciales y servidor proxy (10.0.0.1:8080).
+             Ahora puedes editar absolutamente todos los ajustes directamente desde la ventana del programa!
+
+          MODOS DE RED RAPIDOS:
+          - Cable UCI: Activa UniTunnel y asigna prioridad metrica 10 a la interfaz Ethernet.
+          - Datos Moviles / Wi-Fi: Asigna prioridad metrica 10 a la interfaz Wi-Fi (y 100 a Ethernet),
+            permitiendo navegar con el punto de acceso del telefono SIN tener que desconectar el cable de red.
+          - Directo: Restaura las metricas automaticas nativas de Windows.
+
           BANDEJA DEL SISTEMA:
-          - UniTunnel cuenta con menú en la bandeja del sistema (al lado del reloj) para cambiar de modo
-            de red con un solo clic, conectar/desconectar y consultar tu cuota de navegación.
+          - UniTunnel cuenta con menu en la bandeja del sistema (al lado del reloj) para cambiar de modo
+            de red con un solo clic, conectar/desconectar y consultar tu cuota de navegacion.
           =======================================================
           "@ | Out-File -FilePath "dist-release\LEEME.txt" -Encoding utf8
 

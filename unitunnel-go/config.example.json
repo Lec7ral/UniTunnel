@@ -28,9 +28,6 @@
   "quota_url": "https://cuota.uci.cu/",
   "auto_check_quota": true,
   "quota_check_interval_min": 15,
-  "vps_enabled": false,
-  "vps_server": "",
-  "vps_secret": "",
   "start_minimized": false,
   "auto_start": false,
   "always_on_top": false

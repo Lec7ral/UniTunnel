@@ -105,23 +105,19 @@ func (s *HTTPProxyServer) handleClient(clientConn net.Conn) {
 	}
 
 	// Case 2: Plain HTTP requests (GET, POST, etc.)
-	targetHost := req.Host
-	if !strings.Contains(targetHost, ":") {
-		targetHost += ":80"
-	}
-
-	remoteConn, err := s.dialer.Dial("tcp", targetHost)
+	// Squid denies CONNECT to port 80, so the request is forwarded with an
+	// absolute URI instead of being tunneled.
+	resp, err := s.dialer.DoHTTP(req)
 	if err != nil {
+		if s.OnEvent != nil {
+			s.OnEvent(fmt.Sprintf("HTTP %s → %v", req.Host, err))
+		}
 		_, _ = clientConn.Write([]byte("HTTP/1.1 502 Bad Gateway\r\n\r\n"))
 		return
 	}
-	defer remoteConn.Close()
+	defer resp.Body.Close()
 
-	// Forward original HTTP request
-	err = req.Write(remoteConn)
-	if err != nil {
+	if err := resp.Write(clientConn); err != nil {
 		return
 	}
-
-	traffic.CountingPipe(clientConn, remoteConn)
 }

@@ -8,36 +8,59 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
 
+	"unitunnel/pkg/autostart"
 	"unitunnel/pkg/config"
 	"unitunnel/pkg/elevation"
 	"unitunnel/pkg/logger"
 	"unitunnel/pkg/network"
 	"unitunnel/pkg/service"
+	"unitunnel/pkg/singleinstance"
+	"unitunnel/pkg/tun"
 )
 
 //go:embed all:dist
 var embeddedFrontendFS embed.FS
 
+// windowTitle is shared with the single-instance check: a second process uses
+// it to find and focus the window of the instance already running.
+const windowTitle = "UniTunnel - Acceso Universitario"
+
+const singleInstanceMutex = "UniTunnel-SingleInstance-v1"
+
 func main() {
 	// 0. Initialize persistent multi-path file logger immediately
 	logPath := logger.InitLogger()
-	defer logger.Flush()
+	defer logger.Close()
+
+	// 0b. Only one instance may own ports 1080/8081 and the registry proxy keys.
+	// A second copy focuses the existing window instead of half-starting.
+	instanceLock, firstInstance := singleinstance.Acquire(singleInstanceMutex, windowTitle)
+	if !firstInstance {
+		log.Printf("[INFO] %s ya está en ejecución; se enfocó la ventana existente.", singleinstance.Describe(singleInstanceMutex))
+		return
+	}
+	defer instanceLock.Release()
 
 	// Global Panic Recovery Handler: captures stack trace to log file if runtime panics occur
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("[FATAL PANIC DETECTED] Runtime error: %v\nStack Trace:\n%s", r, debug.Stack())
+			// Flush (not Close): the deferred logger.Close still runs and needs
+			// a valid handle to sync the final bytes.
 			logger.Flush()
 
 			// Write panic details to a fatal panic file next to executable for user visibility
 			exe, err := os.Executable()
 			if err == nil {
 				crashFile := filepath.Join(filepath.Dir(exe), "unitunnel_fatal_crash.txt")
-				_ = os.WriteFile(crashFile, []byte(fmt.Sprintf("UniTunnel Crash Report\nTime: %s\nError: %v\n\nStack:\n%s", logPath, r, debug.Stack())), 0644)
+				report := fmt.Sprintf("UniTunnel Crash Report\nTime: %s\nLog file: %s\nError: %v\n\nStack:\n%s",
+					time.Now().Format(time.RFC3339), logPath, r, debug.Stack())
+				_ = os.WriteFile(crashFile, []byte(report), 0644)
 			}
 		}
 	}()
@@ -60,6 +83,31 @@ func main() {
 
 	log.Println("[DEBUG] Step 4: Initializing AppService backend...")
 	appService := service.NewAppService(cfg)
+
+	// Keep HKCU\...\Run in sync with config.json: the user may have moved the
+	// executable since the setting was enabled.
+	if err := autostart.Apply(cfg.AutoStart); err != nil {
+		log.Printf("[WARN] No se pudo sincronizar el arranque automático con Windows: %v", err)
+	} else if cfg.AutoStart {
+		log.Println("[DEBUG] Arranque automático habilitado (HKCU\\...\\Run).")
+	}
+
+	// Step 4b: recover from an unclean shutdown BEFORE applying the saved mode.
+	// A previous crash can leave stale routes, a 127.0.0.1 system proxy, an
+	// orphaned tun2socks.exe and overridden interface metrics behind.
+	log.Println("[DEBUG] Step 4b: Running startup diagnostics and stale-state cleanup...")
+	diagReport := tun.PerformStartupDiagnosticsAndClean(cfg, func(msg string) {
+		appService.AddLog("DIAG", msg)
+	})
+	log.Printf("[DEBUG] Startup diagnostics: status=%q cleaned=%v issues=%d",
+		diagReport.OverallStatus, diagReport.CleanedStaleState, len(diagReport.IssuesFound))
+
+	if restored, err := network.RestoreMetricsStateIfAny(); err != nil {
+		log.Printf("[WARN] No se pudieron restaurar las métricas de red originales: %v", err)
+	} else if restored {
+		log.Println("[DEBUG] Interface metrics restored from the previous session snapshot.")
+		appService.AddLog("RED", "✓ Métricas de red originales restauradas tras un cierre inesperado.")
+	}
 
 	if cfg.NetworkMode != "" {
 		log.Printf("[DEBUG] Applying initial network mode: %s", cfg.NetworkMode)
@@ -92,7 +140,7 @@ func main() {
 
 	log.Println("[DEBUG] Step 7: Creating Main Webview Window (380x680 px)...")
 	win := app.NewWebviewWindowWithOptions(application.WebviewWindowOptions{
-		Title:          "UniTunnel - Acceso Universitario",
+		Title:          windowTitle,
 		Width:          380,
 		Height:         680,
 		MinWidth:       380,
@@ -107,12 +155,15 @@ func main() {
 		},
 	})
 
-	if win != nil {
-		win.Center()
-		log.Println("[DEBUG] Webview Window initialized and centered successfully.")
-	} else {
-		log.Println("[ERROR] app.NewWebviewWindowWithOptions returned nil window!")
+	if win == nil {
+		// Dereferencing a nil window below used to panic before the tray was even
+		// created. Fail loudly and exit instead of crashing with a stack trace.
+		log.Println("[ERROR] app.NewWebviewWindowWithOptions returned nil window! Aborting startup.")
+		logger.Flush()
+		return
 	}
+	win.Center()
+	log.Println("[DEBUG] Webview Window initialized and centered successfully.")
 
 	// Register close hook to hide window to system tray instead of exiting
 	win.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
@@ -159,31 +210,35 @@ func main() {
 
 	uciCableItem = networkModeSubmenu.AddRadio("Cable UCI (UniTunnel + Ethernet)", cfg.NetworkMode == string(network.ModeUCICable))
 	uciCableItem.OnClick(func(ctx *application.Context) {
-		_ = appService.SetNetworkMode(string(network.ModeUCICable))
-		updateModeChecks(string(network.ModeUCICable))
+		// SetNetworkMode shells out to PowerShell/netsh (seconds). Never block the
+		// tray/UI event loop: run it off-thread and let the mode callback refresh
+		// the radio checks when it finishes.
+		go func() { _ = appService.SetNetworkMode(string(network.ModeUCICable)) }()
 	})
 
 	wifiMobileItem = networkModeSubmenu.AddRadio("Datos Móviles / Wi-Fi (Prioridad Wi-Fi)", cfg.NetworkMode == string(network.ModeWiFiMobile))
 	wifiMobileItem.OnClick(func(ctx *application.Context) {
-		_ = appService.SetNetworkMode(string(network.ModeWiFiMobile))
-		updateModeChecks(string(network.ModeWiFiMobile))
+		go func() { _ = appService.SetNetworkMode(string(network.ModeWiFiMobile)) }()
 	})
 
 	directItem = networkModeSubmenu.AddRadio("Directo / Automático (Sin Proxy)", cfg.NetworkMode == string(network.ModeDirect))
 	directItem.OnClick(func(ctx *application.Context) {
-		_ = appService.SetNetworkMode(string(network.ModeDirect))
-		updateModeChecks(string(network.ModeDirect))
+		go func() { _ = appService.SetNetworkMode(string(network.ModeDirect)) }()
 	})
 
 	trayMenu.AddSeparator()
 
 	connectItem := trayMenu.Add("Conectar")
 	connectItem.OnClick(func(ctx *application.Context) {
-		if appService.IsConnected() {
-			_ = appService.StopTunnel()
-		} else {
-			_ = appService.StartTunnel()
-		}
+		// StartTunnel performs an 8s pre-flight auth check plus the Wintun setup;
+		// StopTunnel restores routes/proxy. Both must stay off the event loop.
+		go func() {
+			if appService.IsConnected() {
+				_ = appService.StopTunnel()
+			} else {
+				_ = appService.StartTunnel()
+			}
+		}()
 	})
 
 	quotaItem := trayMenu.Add("Consultar Cuota UCI")

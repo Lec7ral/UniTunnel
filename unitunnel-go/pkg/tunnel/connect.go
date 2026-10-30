@@ -44,6 +44,20 @@ func (d *Dialer) ProxyAddress() string {
 	return fmt.Sprintf("%s:%d", d.cfg.ProxyHost, d.cfg.ProxyPort)
 }
 
+// authType returns the currently negotiated authentication scheme.
+func (d *Dialer) authType() auth.AuthType {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.authScheme
+}
+
+// setAuthType records a scheme discovered during the proxy handshake.
+func (d *Dialer) setAuthType(t auth.AuthType) {
+	d.mu.Lock()
+	d.authScheme = t
+	d.mu.Unlock()
+}
+
 // ResetAuthLock clears any anti-lockout trip when user edits credentials or initiates connect
 func (d *Dialer) ResetAuthLock() {
 	d.mu.Lock()
@@ -277,8 +291,9 @@ func (d *Dialer) negotiateConnect(conn net.Conn, targetAddr string, account *con
 		cleanDomain, cleanUser = auth.SplitDomainUser(account.Domain, account.Username)
 	}
 
-	useNTLM := (d.authScheme == auth.AuthTypeNTLM || d.authScheme == "auto" || d.authScheme == "")
-	useBasic := (d.authScheme == auth.AuthTypeBasic)
+	scheme := d.authType()
+	useNTLM := (scheme == auth.AuthTypeNTLM || scheme == "auto" || scheme == "")
+	useBasic := (scheme == auth.AuthTypeBasic)
 
 	reader := bufio.NewReader(conn)
 
@@ -321,7 +336,7 @@ func (d *Dialer) negotiateConnect(conn net.Conn, targetAddr string, account *con
 	if resp1.statusCode == 407 {
 		// Case 1: Proxy responded to Type-1 with Type-2 Challenge
 		if resp1.hasNTLM && resp1.ntlmChallenge != "" && account != nil && cleanUser != "" {
-			d.authScheme = auth.AuthTypeNTLM
+			d.setAuthType(auth.AuthTypeNTLM)
 			chDetails, err := auth.ParseChallengeMessage(resp1.ntlmChallenge)
 			if err != nil {
 				return nil, fmt.Errorf("error decodificando challenge NTLM del proxy: %w", err)
@@ -396,7 +411,7 @@ func (d *Dialer) negotiateConnect(conn net.Conn, targetAddr string, account *con
 
 		// Case 2: Proxy offers NTLM but did not receive Type-1 yet
 		if resp1.hasNTLM && resp1.ntlmChallenge == "" && account != nil && cleanUser != "" {
-			d.authScheme = auth.AuthTypeNTLM
+			d.setAuthType(auth.AuthTypeNTLM)
 			type1 := auth.CreateNegotiateMessage(cleanDomain, "UNITUNNEL-PC")
 			type1Req := fmt.Sprintf("CONNECT %s HTTP/1.1\r\n"+
 				"Host: %s\r\n"+
@@ -446,7 +461,7 @@ func (d *Dialer) negotiateConnect(conn net.Conn, targetAddr string, account *con
 
 		// Case 3: Basic authentication fallback
 		if resp1.hasBasic && account != nil && cleanUser != "" {
-			d.authScheme = auth.AuthTypeBasic
+			d.setAuthType(auth.AuthTypeBasic)
 			cred := base64.StdEncoding.EncodeToString([]byte(cleanUser + ":" + account.Password))
 			req := fmt.Sprintf("CONNECT %s HTTP/1.1\r\n"+
 				"Host: %s\r\n"+
@@ -486,21 +501,41 @@ func (d *Dialer) negotiateConnect(conn net.Conn, targetAddr string, account *con
 	return nil, errors.New(errMsg)
 }
 
-// Pipe forwards bidirectional traffic between two connections
+// Pipe forwards bidirectional traffic between two connections.
+//
+// The first EOF is treated as a half-close: the reverse direction keeps
+// running so a client that stops sending still receives the full response.
 func Pipe(src, dst net.Conn) {
-	defer src.Close()
-	defer dst.Close()
-
 	errChan := make(chan error, 2)
+
 	go func() {
 		_, err := io.Copy(dst, src)
+		halfCloseWrite(dst)
 		errChan <- err
 	}()
 	go func() {
 		_, err := io.Copy(src, dst)
+		halfCloseWrite(src)
 		errChan <- err
 	}()
+
+	if err := <-errChan; err != nil {
+		// Hard error (reset, broken pipe): close both so the other goroutine
+		// does not leak.
+		_ = src.Close()
+		_ = dst.Close()
+		return
+	}
 	<-errChan
+	_ = src.Close()
+	_ = dst.Close()
+}
+
+// halfCloseWrite propagates EOF without tearing down the reverse direction.
+func halfCloseWrite(c net.Conn) {
+	if cw, ok := c.(interface{ CloseWrite() error }); ok {
+		_ = cw.CloseWrite()
+	}
 }
 
 type bufferedConn struct {

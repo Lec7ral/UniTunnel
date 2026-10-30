@@ -1,0 +1,3 @@
+# Placeholder so `//go:embed all:dist` in unitunnel-go/main.go always finds a
+# directory, even on a clean clone before the frontend has been built.
+# `npm run build` writes the real bundle here and Vite keeps this file.

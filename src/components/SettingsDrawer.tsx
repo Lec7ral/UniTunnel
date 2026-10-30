@@ -14,11 +14,13 @@ import {
   Globe,
   Gauge,
   CheckCircle2,
+  AlertTriangle,
   HardDrive,
   Wifi,
   RefreshCw,
 } from 'lucide-react';
 import { AppConfig, UserAccount, defaultConfig, bridge } from '../services/wailsBridge';
+import { reconnectReasons } from '../services/configDiff';
 
 interface SettingsDrawerProps {
   isOpen: boolean;
@@ -34,9 +36,10 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
   onSave,
 }) => {
   const [cfg, setCfg] = useState<AppConfig>(initialConfig);
-  const [activeTab, setActiveTab] = useState<'proxy' | 'accounts' | 'network' | 'system' | 'vps'>('proxy');
+  const [activeTab, setActiveTab] = useState<'proxy' | 'accounts' | 'network' | 'system'>('proxy');
   const [saving, setSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [showPasswordMap, setShowPasswordMap] = useState<Record<string, boolean>>({});
   const [newBypassInput, setNewBypassInput] = useState('');
 
@@ -52,6 +55,7 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
     if (isOpen) {
       setCfg(initialConfig);
       setSaveSuccess(false);
+      setSaveError(null);
       bridge.isHotspotForced().then(setForceHotspotActive).catch(() => {});
     }
   }, [isOpen, initialConfig]);
@@ -85,13 +89,21 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
 
   if (!isOpen) return null;
 
+  // Settings that only take effect on the next connection (see configDiff.ts).
+  const pendingReconnect = reconnectReasons(cfg, initialConfig);
+
   const handleSave = async () => {
     setSaving(true);
+    setSaveError(null);
     const success = await onSave(cfg);
     setSaving(false);
     if (success) {
       setSaveSuccess(true);
       setTimeout(() => setSaveSuccess(false), 2500);
+    } else {
+      // The bridge only returns false after a real backend failure; never show
+      // "guardado" when nothing was written to config.json.
+      setSaveError('El backend no confirmó el guardado. Revisa los logs.');
     }
   };
 
@@ -235,17 +247,6 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
           >
             <HardDrive className="w-3.5 h-3.5" />
             Windows
-          </button>
-          <button
-            onClick={() => setActiveTab('vps')}
-            className={`px-3 py-2 text-xs font-medium rounded-t-lg transition flex items-center gap-1.5 whitespace-nowrap border-b-2 ${
-              activeTab === 'vps'
-                ? 'border-cyan-500 text-cyan-400 bg-slate-900'
-                : 'border-transparent text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            <Globe className="w-3.5 h-3.5" />
-            VPS Opcional
           </button>
         </div>
 
@@ -444,7 +445,7 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
                             type="text"
                             value={acc.username}
                             onChange={(e) => handleUpdateAccount(acc.id, { username: e.target.value })}
-                            placeholder="ej. yoanbrp"
+                            placeholder="ej. usuario"
                             className="w-full bg-slate-900 border border-slate-800 rounded px-2.5 py-1.5 font-mono text-slate-200 focus:outline-none focus:border-cyan-500"
                           />
                         </div>
@@ -713,7 +714,7 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
               <div className="p-3.5 rounded-xl bg-slate-950/60 border border-slate-800 space-y-2">
                 <h4 className="font-semibold text-slate-300">Ubicación del Archivo de Configuración</h4>
                 <p className="text-slate-400 font-mono text-[11px] bg-slate-900 p-2 rounded border border-slate-800">
-                  %USERPROFILE%\UniTunnel\config.json
+                  config.json (junto a unitunnel.exe)
                 </p>
                 <p className="text-[11px] text-slate-500">
                   Cualquier cambio guardado desde este panel se sincroniza de inmediato con el archivo JSON y con el backend de Go.
@@ -721,55 +722,17 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
               </div>
             </div>
           )}
-
-          {/* TAB 5: OPTIONAL VPS */}
-          {activeTab === 'vps' && (
-            <div className="space-y-4">
-              <div className="p-3.5 rounded-xl bg-slate-950/60 border border-slate-800 space-y-3">
-                <div className="flex items-center justify-between">
-                  <h3 className="font-semibold text-slate-200 flex items-center gap-1.5">
-                    <Globe className="w-4 h-4 text-cyan-400" />
-                    Puente VPS Secundario (Salida Externa)
-                  </h3>
-                  <input
-                    type="checkbox"
-                    checked={cfg.vps_enabled}
-                    onChange={(e) => setCfg({ ...cfg, vps_enabled: e.target.checked })}
-                    className="w-4 h-4 rounded text-cyan-600 focus:ring-0 bg-slate-900 border-slate-700"
-                  />
-                </div>
-                <p className="text-slate-400 text-[11px]">
-                  Permite encadenar el túnel universitario a través de un servidor VPS externo para cifrado adicional y acceso sin filtros.
-                </p>
-
-                {cfg.vps_enabled && (
-                  <div className="space-y-3 pt-2">
-                    <div>
-                      <label className="text-slate-400 block mb-1">Servidor VPS (IP o Dominio:Puerto):</label>
-                      <input
-                        type="text"
-                        value={cfg.vps_server}
-                        onChange={(e) => setCfg({ ...cfg, vps_server: e.target.value })}
-                        placeholder="vps.ejemplo.com:443"
-                        className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 font-mono text-slate-200 focus:outline-none focus:border-cyan-500"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-slate-400 block mb-1">Clave Secreta Pre-compartida (PSK):</label>
-                      <input
-                        type="password"
-                        value={cfg.vps_secret}
-                        onChange={(e) => setCfg({ ...cfg, vps_secret: e.target.value })}
-                        placeholder="Token o contraseña de enlace"
-                        className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 font-mono text-slate-200 focus:outline-none focus:border-cyan-500"
-                      />
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
         </div>
+
+        {pendingReconnect.length > 0 && (
+          <div className="px-4 py-2.5 border-t border-amber-500/30 bg-amber-500/10 flex items-start gap-2">
+            <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+            <p className="text-[11px] text-amber-200/90 leading-relaxed">
+              <span className="font-semibold">{pendingReconnect.join(', ')}</span>
+              {' '}— estos ajustes solo se aplican al reconectar el túnel.
+            </p>
+          </div>
+        )}
 
         {/* Footer Actions */}
         <div className="p-4 border-t border-slate-800 bg-slate-950/90 flex items-center justify-between">
@@ -782,6 +745,12 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
           </button>
 
           <div className="flex items-center gap-2">
+            {saveError && (
+              <span className="text-red-400 text-xs flex items-center gap-1 font-medium animate-in fade-in max-w-[220px]">
+                <AlertTriangle className="w-4 h-4 shrink-0" />
+                <span className="truncate" title={saveError}>No se guardó</span>
+              </span>
+            )}
             {saveSuccess && (
               <span className="text-emerald-400 text-xs flex items-center gap-1 font-medium animate-in fade-in">
                 <CheckCircle2 className="w-4 h-4" />

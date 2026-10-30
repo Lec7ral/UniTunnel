@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"os/exec"
 	"syscall"
+
 	"golang.org/x/sys/windows/registry"
+
+	"unitunnel/pkg/appstate"
 )
 
 var (
@@ -19,9 +22,18 @@ const (
 	INTERNET_OPTION_REFRESH          = 37
 )
 
-// EnableSystemProxy sets Windows system proxy to local HTTP (8081) and SOCKS5 (1080)
+// EnableSystemProxy sets Windows system proxy to local HTTP (8081) and SOCKS5 (1080).
+//
+// Before touching the registry it persists the user's current proxy
+// configuration, so DisableSystemProxy can restore it byte-for-byte instead of
+// just switching the proxy off (which would silently destroy a corporate
+// AutoConfigURL / proxy server).
 func EnableSystemProxy(httpPort, socksPort int) error {
-	k, err := registry.OpenKey(registry.CURRENT_USER, `Software\Microsoft\Windows\CurrentVersion\Internet Settings`, registry.SET_VALUE)
+	if err := persistProxyStateIfMissing(); err != nil {
+		return fmt.Errorf("no se pudo guardar el estado previo del proxy; no se modifica el sistema: %w", err)
+	}
+
+	k, err := registry.OpenKey(registry.CURRENT_USER, internetSettingsKey, registry.SET_VALUE)
 	if err != nil {
 		return fmt.Errorf("error al abrir registro de Windows: %w", err)
 	}
@@ -105,9 +117,19 @@ func RemoveConsoleEnvironmentProxies() {
 	_ = k.DeleteValue("all_proxy")
 }
 
-// DisableSystemProxy turns off Windows system proxy and clears console environment
+// DisableSystemProxy restores the proxy configuration captured by
+// EnableSystemProxy. When no snapshot exists (for example the app was never
+// connected on this machine) it falls back to switching the proxy off.
 func DisableSystemProxy() error {
-	k, err := registry.OpenKey(registry.CURRENT_USER, `Software\Microsoft\Windows\CurrentVersion\Internet Settings`, registry.SET_VALUE)
+	if state, err := loadProxyState(); err == nil && state != nil {
+		if rerr := state.restore(); rerr != nil {
+			return fmt.Errorf("no se pudo restaurar el proxy original: %w", rerr)
+		}
+		_ = appstate.Remove(proxyStateFile)
+		return nil
+	}
+
+	k, err := registry.OpenKey(registry.CURRENT_USER, internetSettingsKey, registry.SET_VALUE)
 	if err != nil {
 		return err
 	}

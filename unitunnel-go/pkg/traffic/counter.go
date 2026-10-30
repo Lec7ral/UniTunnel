@@ -4,13 +4,11 @@ import (
 	"io"
 	"net"
 	"sync/atomic"
-	"time"
 )
 
 var (
 	totalBytesRead    uint64
 	totalBytesWritten uint64
-	currentSpeedMBs   uint64 // bits for float64
 	lastPingMS        int64
 )
 
@@ -36,89 +34,77 @@ func GetTotals() (readMB float64, writeMB float64, totalMB float64) {
 	return float64(r) / (1024 * 1024), float64(w) / (1024 * 1024), float64(r+w) / (1024 * 1024)
 }
 
-// CountingPipe forwards bidirectional traffic while measuring bytes
+// CountingPipe forwards bidirectional traffic while measuring bytes.
+//
+// Semantics match the UI: bytes flowing from dst to src are a *download* and
+// are reported as read_mb; bytes flowing from src to dst are an *upload* and
+// are reported as write_mb. Callers pass (localConn, remoteConn).
 func CountingPipe(src, dst net.Conn) {
-	defer src.Close()
-	defer dst.Close()
-
 	errChan := make(chan error, 2)
+
+	// Upload direction: local client -> remote server.
 	go func() {
 		buf := make([]byte, 32*1024)
 		for {
 			n, err := src.Read(buf)
 			if n > 0 {
-				AddRead(n)
-				_, wErr := dst.Write(buf[:n])
-				if wErr != nil {
+				AddWrite(n)
+				if _, wErr := dst.Write(buf[:n]); wErr != nil {
 					errChan <- wErr
 					return
 				}
 			}
 			if err != nil {
-				if err != io.EOF {
-					errChan <- err
-				} else {
+				if err == io.EOF {
+					halfCloseWrite(dst)
 					errChan <- nil
+				} else {
+					errChan <- err
 				}
 				return
 			}
 		}
 	}()
 
+	// Download direction: remote server -> local client.
 	go func() {
 		buf := make([]byte, 32*1024)
 		for {
 			n, err := dst.Read(buf)
 			if n > 0 {
-				AddWrite(n)
-				_, wErr := src.Write(buf[:n])
-				if wErr != nil {
+				AddRead(n)
+				if _, wErr := src.Write(buf[:n]); wErr != nil {
 					errChan <- wErr
 					return
 				}
 			}
 			if err != nil {
-				if err != io.EOF {
-					errChan <- err
-				} else {
+				if err == io.EOF {
+					halfCloseWrite(src)
 					errChan <- nil
+				} else {
+					errChan <- err
 				}
 				return
 			}
 		}
 	}()
 
+	if err := <-errChan; err != nil {
+		// Hard error: the other direction cannot progress either.
+		_ = src.Close()
+		_ = dst.Close()
+		return
+	}
+	// Clean half-close: let the remaining direction drain before closing.
 	<-errChan
+	_ = src.Close()
+	_ = dst.Close()
 }
 
-// StartSpeedMonitor calculates real-time MB/s every interval
-func StartSpeedMonitor(interval time.Duration, onTick func(speedMBs float64, pingMS int64)) chan struct{} {
-	stop := make(chan struct{})
-	go func() {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-
-		var lastTotal uint64
-		for {
-			select {
-			case <-stop:
-				return
-			case <-ticker.C:
-				r := atomic.LoadUint64(&totalBytesRead)
-				w := atomic.LoadUint64(&totalBytesWritten)
-				curr := r + w
-
-				delta := curr - lastTotal
-				lastTotal = curr
-
-				speed := (float64(delta) / (1024 * 1024)) / interval.Seconds()
-				ping := GetPing()
-
-				if onTick != nil {
-					onTick(speed, ping)
-				}
-			}
-		}
-	}()
-	return stop
+// halfCloseWrite propagates EOF without tearing down the reverse direction.
+func halfCloseWrite(c net.Conn) {
+	if cw, ok := c.(interface{ CloseWrite() error }); ok {
+		_ = cw.CloseWrite()
+	}
 }

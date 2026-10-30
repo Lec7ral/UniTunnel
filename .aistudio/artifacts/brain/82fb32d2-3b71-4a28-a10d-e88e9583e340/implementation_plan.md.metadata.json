@@ -1,6 +1,0 @@
-{
-  "summary":  "Plan de rediseño de interfaz para UniTunnel: interfaz compacta y limpia estilo widget de escritorio (inspirada en la simplicidad de Fyne), con los 4 elementos esenciales en la vista central (botón de conectar, monitor de cuota con soporte de sobregiro, cuenta activa y gráfica de velocidad en tiempo real), menú desplegable elegante para los Modos de Red, y acceso lateral a los paneles de Ajustes y Logs.",
-  "updatedAt":  "2026-10-24T20:22:15.668112022Z",
-  "requestFeedback":  true,
-  "userFacing":  true
-}

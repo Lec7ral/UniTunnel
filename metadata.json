@@ -1,7 +1,0 @@
-{
-  "name": "UniTunnel Control Center & NTLM Diagnostic Hub",
-  "description": "Panel de control web y herramienta de diagnóstico NTLMv2 para UniTunnel VPN (cliente de túnel Wintun y proxy Squid para redes institucionales).",
-  "capabilities": [
-    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
-  ]
-}

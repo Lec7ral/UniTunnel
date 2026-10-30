@@ -4,6 +4,7 @@ package tun
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"unitunnel/pkg/appstate"
 	"unitunnel/pkg/config"
 )
 
@@ -49,27 +51,13 @@ type WintunDevice struct {
 	tunIP            string
 	tunGw            string
 	routesConfigured bool
+	routes           *routesState
 	closed           bool
 	mu               sync.Mutex
 }
 
-// CleanStaleRoutes purges any orphaned routes left behind by previous crashes or reboots
-func CleanStaleRoutes(proxyHost, tunIP string) {
-	if tunIP == "" {
-		tunIP = "10.254.1.2"
-	}
-	tunGw := "10.254.1.1"
-	_ = runHidden("route", "delete", "0.0.0.0", "mask", "128.0.0.0", tunIP)
-	_ = runHidden("route", "delete", "0.0.0.0", "mask", "128.0.0.0", tunGw)
-	_ = runHidden("route", "delete", "128.0.0.0", "mask", "128.0.0.0", tunIP)
-	_ = runHidden("route", "delete", "128.0.0.0", "mask", "128.0.0.0", tunGw)
-	if proxyHost != "" {
-		_ = runHidden("route", "delete", proxyHost, "mask", "255.255.255.255")
-	}
-	_ = runHidden("route", "delete", "10.0.0.0", "mask", "255.0.0.0")
-	_ = runHidden("route", "delete", "172.16.0.0", "mask", "255.240.0.0")
-	_ = runHidden("route", "delete", "192.168.0.0", "mask", "255.255.0.0")
-}
+// CleanStaleRoutes is defined in routes_state_windows.go: it deletes only the
+// routes a previous UniTunnel session registered, never arbitrary subnets.
 
 // OpenWintun initializes Wintun virtual adapter, starts tun2socks, and configures routing safely
 func OpenWintun(cfg *config.Config, onLog func(string)) (*WintunDevice, error) {
@@ -116,6 +104,7 @@ func OpenWintun(cfg *config.Config, onLog func(string)) (*WintunDevice, error) {
 		defaultGateway: gw,
 		proxyIP:        cfg.ProxyHost,
 		tunIP:          tunIP,
+		routes:         &routesState{},
 	}
 
 	// Rollback guarantee on any failure during setup
@@ -221,10 +210,39 @@ func OpenWintun(cfg *config.Config, onLog func(string)) (*WintunDevice, error) {
 	_ = runHidden("ipconfig", "/flushdns")
 
 	// 8. Configure Subnet Routing and bypasses:
-	_ = runHidden("route", "add", cfg.ProxyHost, "mask", "255.255.255.255", gw, "metric", "5")
-	_ = runHidden("route", "add", "10.0.0.0", "mask", "255.0.0.0", gw, "metric", "5")
-	_ = runHidden("route", "add", "172.16.0.0", "mask", "255.240.0.0", gw, "metric", "5")
-	_ = runHidden("route", "add", "192.168.0.0", "mask", "255.255.0.0", gw, "metric", "5")
+	// Only routes Windows actually accepts are recorded, so Close deletes
+	// exactly this session's routes and nothing else.
+	proxyRouteIP := cfg.ProxyHost
+	if proxyRouteIP != "" && net.ParseIP(proxyRouteIP) == nil {
+		// `route add` only accepts IPs; resolve a hostname once, here, where the
+		// physical DNS still works.
+		if addrs, err := net.LookupIP(proxyRouteIP); err == nil {
+			for _, addr := range addrs {
+				if v4 := addr.To4(); v4 != nil {
+					proxyRouteIP = v4.String()
+					break
+				}
+			}
+		}
+	}
+	if proxyRouteIP != "" {
+		_ = addRouteAndRecord(dev.routes, proxyRouteIP, "255.255.255.255", gw, "5")
+	}
+
+	bypassRoutes := cfg.BypassRoutes
+	if len(bypassRoutes) == 0 {
+		bypassRoutes = []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"}
+	}
+	for _, cidr := range bypassRoutes {
+		dest, mask, ok := cidrToDestMask(cidr)
+		if !ok {
+			if onLog != nil {
+				onLog(fmt.Sprintf("⚠ Ruta de bypass inválida ignorada: %q", cidr))
+			}
+			continue
+		}
+		_ = addRouteAndRecord(dev.routes, dest, mask, gw, "5")
+	}
 
 	// 8. Direct all public internet traffic (0.0.0.0/1 and 128.0.0.0/1) through virtual TUN gateway
 	// (Split default route technique: overrides default 0.0.0.0/0 without deleting physical default gateway)
@@ -232,9 +250,15 @@ func OpenWintun(cfg *config.Config, onLog func(string)) (*WintunDevice, error) {
 	if err1 != nil {
 		err1 = runHidden("netsh", "interface", "ipv4", "add", "route", "0.0.0.0/1", adapterName, tunGw, "metric=1")
 	}
+	if err1 == nil {
+		_ = dev.routes.add(routeSpec{Destination: "0.0.0.0", Mask: "128.0.0.0", Gateway: tunGw})
+	}
 	err2 := runHidden("route", "add", "128.0.0.0", "mask", "128.0.0.0", tunGw, "metric", "1")
 	if err2 != nil {
 		err2 = runHidden("netsh", "interface", "ipv4", "add", "route", "128.0.0.0/1", adapterName, tunGw, "metric=1")
+	}
+	if err2 == nil {
+		_ = dev.routes.add(routeSpec{Destination: "128.0.0.0", Mask: "128.0.0.0", Gateway: tunGw})
 	}
 	if err1 != nil || err2 != nil {
 		return nil, fmt.Errorf("error al inyectar rutas del túnel en la tabla de enrutamiento de Windows: %v, %v", err1, err2)
@@ -256,6 +280,16 @@ func isInterfacePresent(name string) bool {
 		return false
 	}
 	return strings.Contains(string(out), name)
+}
+
+// cidrToDestMask converts "10.0.0.0/8" into the destination/mask pair that
+// `route add` expects ("10.0.0.0", "255.0.0.0").
+func cidrToDestMask(cidr string) (dest, mask string, ok bool) {
+	ip, ipnet, err := net.ParseCIDR(strings.TrimSpace(cidr))
+	if err != nil || ip.To4() == nil {
+		return "", "", false
+	}
+	return ipnet.IP.To4().String(), net.IP(ipnet.Mask).String(), true
 }
 
 func getDefaultGateway() string {
@@ -287,37 +321,27 @@ func (w *WintunDevice) Close() error {
 	}
 	w.closed = true
 
-	// 1. Delete split tunnel routes
-	if w.tunGw != "" {
-		_ = runHidden("route", "delete", "0.0.0.0", "mask", "128.0.0.0", w.tunGw)
-		_ = runHidden("route", "delete", "128.0.0.0", "mask", "128.0.0.0", w.tunGw)
+	// 1. Delete only the routes this session registered (see routes_state_windows.go).
+	// Blanket deletes of 10.0.0.0/8 etc. would also destroy routes UniTunnel
+	// never created.
+	if w.routes != nil {
+		w.routes.deleteAll()
 	}
-	if w.tunIP != "" {
-		_ = runHidden("route", "delete", "0.0.0.0", "mask", "128.0.0.0", w.tunIP)
-		_ = runHidden("route", "delete", "128.0.0.0", "mask", "128.0.0.0", w.tunIP)
-	}
+	_ = appstate.Remove(routesStateFile)
 
-	// 2. Delete proxy and subnet bypass routes
-	if w.proxyIP != "" {
-		_ = runHidden("route", "delete", w.proxyIP, "mask", "255.255.255.255")
-	}
-	_ = runHidden("route", "delete", "10.0.0.0", "mask", "255.0.0.0")
-	_ = runHidden("route", "delete", "172.16.0.0", "mask", "255.240.0.0")
-	_ = runHidden("route", "delete", "192.168.0.0", "mask", "255.255.0.0")
-
-	// 3. Terminate tun2socks process
+	// 2. Terminate tun2socks process
 	if w.tun2socksCmd != nil && w.tun2socksCmd.Process != nil {
 		_ = w.tun2socksCmd.Process.Kill()
 		_ = w.tun2socksCmd.Wait()
 		w.tun2socksCmd = nil
 	}
 
-	// 4. Clean interface address
+	// 3. Clean interface address
 	if w.Name != "" {
 		_ = runHidden("netsh", "interface", "ip", "delete", "address", fmt.Sprintf("name=\"%s\"", w.Name), "addr="+w.tunIP)
 	}
 
-	// 5. Clear stale DNS cache
+	// 4. Clear stale DNS cache
 	_ = runHidden("ipconfig", "/flushdns")
 
 	return nil

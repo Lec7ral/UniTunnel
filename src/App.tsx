@@ -1,24 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import {
-  Shield,
   Settings,
   Terminal,
-  Activity,
-  Play,
-  Square,
   RefreshCw,
   Gauge,
-  Wifi,
-  Cable,
-  Globe2,
-  CheckCircle2,
-  AlertTriangle,
-  ChevronDown,
   Info,
-  Server,
-  Zap,
-  Pin,
-  PinOff,
+  AlertTriangle,
   Power,
 } from 'lucide-react';
 import {
@@ -27,17 +14,17 @@ import {
   defaultConfig,
   QuotaInfo,
   NetworkMode,
-  InterfaceStatus,
 } from './services/wailsBridge';
 import { SettingsDrawer } from './components/SettingsDrawer';
 import { LogsDrawer } from './components/LogsDrawer';
+import { reconnectReasons, reconnectWarning } from './services/configDiff';
 
 export default function App() {
   const [config, setConfig] = useState<AppConfig>(defaultConfig);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [logsOpen, setLogsOpen] = useState(false);
   const [logs, setLogs] = useState<string[]>([]);
-  const [interfaces, setInterfaces] = useState<InterfaceStatus[]>([]);
+  const [backendError, setBackendError] = useState<string | null>(null);
 
   // Connection & Tunnel state
   const [connected, setConnected] = useState(false);
@@ -62,31 +49,24 @@ export default function App() {
   });
   const [quotaLoading, setQuotaLoading] = useState(false);
 
-  // Diagnostic modal/runner state
-  const [showDiag, setShowDiag] = useState(false);
-  const [diagStep, setDiagStep] = useState(0);
-  const [diagRunning, setDiagRunning] = useState(false);
-  const [diagResult, setDiagResult] = useState<{
-    success: boolean;
-    server: string;
-    scheme: string;
-    bodyDrained: number;
-    details: string;
-  } | null>(null);
-
   // Mode switching feedback toast
   const [modeNotice, setModeNotice] = useState<string | null>(null);
 
   // Initial load and live backend synchronization
   useEffect(() => {
     async function loadInitial() {
-      const loaded = await bridge.getConfig();
-      setConfig(loaded);
-      const ifaces = await bridge.getInterfaces();
-      setInterfaces(ifaces);
-      const isConn = await bridge.isConnected();
-      setConnected(isConn);
-      await bridge.fetchLogs();
+      try {
+        const loaded = await bridge.getConfig();
+        setConfig(loaded);
+        setBackendError(null);
+        const isConn = await bridge.isConnected();
+        setConnected(isConn);
+        await bridge.fetchLogs();
+      } catch (err) {
+        // No silent fallback: if the Go backend is unreachable the UI must say so
+        // instead of showing defaults as if they were the real configuration.
+        setBackendError(err instanceof Error ? err.message : String(err));
+      }
     }
     loadInitial();
 
@@ -132,16 +112,28 @@ export default function App() {
     config.accounts[0] || {
       id: 'default',
       name: 'Cuenta Principal',
-      username: 'yoanbrp',
+      username: '',
       domain: 'uci.cu',
     };
 
   const handleSaveConfig = async (newConfig: AppConfig): Promise<boolean> => {
     const ok = await bridge.saveConfig(newConfig);
-    if (ok) {
-      setConfig(newConfig);
+    if (!ok) {
+      return false;
     }
-    return ok;
+
+    // The tunnel was built from the previous config: warn when the new values
+    // will only take effect after reconnecting.
+    if (connected || connecting) {
+      const reasons = reconnectReasons(newConfig, config);
+      if (reasons.length > 0) {
+        setModeNotice(reconnectWarning(reasons));
+        setTimeout(() => setModeNotice(null), 8000);
+      }
+    }
+
+    setConfig(newConfig);
+    return true;
   };
 
   const handleSelectNetworkMode = async (mode: NetworkMode) => {
@@ -161,8 +153,6 @@ export default function App() {
 
     await bridge.applyNetworkMode(mode);
     setConfig((prev) => ({ ...prev, network_mode: mode }));
-    const updatedIfaces = await bridge.getInterfaces();
-    setInterfaces(updatedIfaces);
 
     // If switching to mobile or direct, stop tunnel if active
     if (mode !== 'uci_cable' && connected) {
@@ -184,7 +174,12 @@ export default function App() {
   };
 
   const handleConnectToggle = async () => {
-    if (connected || connecting) {
+    // Ignore clicks while a connection attempt is in flight. The old code sent a
+    // StopTunnel that the still-running StartTunnel immediately undid, leaving
+    // the backend and the UI with different states.
+    if (connecting) return;
+
+    if (connected) {
       setConnecting(true);
       await bridge.stopTunnel();
       setConnected(false);
@@ -225,56 +220,24 @@ export default function App() {
     }
   };
 
-  const runDiagnostics = async () => {
-    setDiagRunning(true);
-    setDiagStep(1);
-    setDiagResult(null);
-
-    try {
-      setDiagStep(2);
-      const isConn = await bridge.isConnected();
-      setDiagStep(3);
-      const q = await bridge.fetchQuota(activeAccount);
-      setDiagStep(4);
-      setDiagRunning(false);
-
-      if (q.success) {
-        setDiagResult({
-          success: true,
-          server: `${config.proxy_host}:${config.proxy_port}`,
-          scheme: config.auth_type.toUpperCase(),
-          bodyDrained: 0,
-          details: `Conexión verificada con éxito. Usuario: ${activeAccount.username}. Saldo restante: ${q.remaining_mb.toFixed(1)} MB.`,
-        });
-      } else {
-        setDiagResult({
-          success: false,
-          server: `${config.proxy_host}:${config.proxy_port}`,
-          scheme: config.auth_type.toUpperCase(),
-          bodyDrained: 0,
-          details: q.error_message || 'No se pudo contactar con el proxy o con cuota.uci.cu.',
-        });
-      }
-    } catch (err: unknown) {
-      setDiagStep(4);
-      setDiagRunning(false);
-      setDiagResult({
-        success: false,
-        server: `${config.proxy_host}:${config.proxy_port}`,
-        scheme: config.auth_type.toUpperCase(),
-        bodyDrained: 0,
-        details: String(err),
-      });
-    }
-  };
-
   return (
     <div className="h-screen w-full bg-slate-950 text-slate-100 flex flex-col font-sans select-none overflow-hidden relative">
       {/* Network Mode Feedback Banner */}
       {modeNotice && (
-        <div className="absolute top-3 left-1/2 -translate-x-1/2 z-50 bg-slate-900 border border-cyan-800/60 px-4 py-1.5 rounded-xl text-xs text-cyan-200 shadow-xl flex items-center gap-2 animate-in fade-in">
+        <div className="absolute top-3 left-1/2 -translate-x-1/2 z-50 max-w-lg w-[92%] bg-slate-900 border border-cyan-800/60 px-4 py-1.5 rounded-xl text-xs text-cyan-200 shadow-xl flex items-center gap-2 animate-in fade-in">
           <Info className="w-4 h-4 text-cyan-400 shrink-0" />
-          <span>{modeNotice}</span>
+          <span className="leading-snug">{modeNotice}</span>
+        </div>
+      )}
+
+      {/* Backend Unavailable Banner: never pretend the Go side answered */}
+      {backendError && (
+        <div className="absolute top-3 left-1/2 -translate-x-1/2 z-50 max-w-md w-[92%] bg-red-950/90 border border-red-800/70 px-4 py-2 rounded-xl text-xs text-red-100 shadow-xl flex items-start gap-2 animate-in fade-in">
+          <AlertTriangle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+          <div className="space-y-0.5">
+            <div className="font-semibold">Backend Go no disponible</div>
+            <div className="opacity-90 break-words">{backendError}</div>
+          </div>
         </div>
       )}
 
@@ -325,7 +288,7 @@ export default function App() {
 
             <button
               onClick={handleConnectToggle}
-              disabled={config.network_mode !== 'uci_cable' && !connected}
+              disabled={connecting || (config.network_mode !== 'uci_cable' && !connected)}
               className={`w-32 h-32 rounded-full flex flex-col items-center justify-center transition-all duration-300 shadow-2xl relative z-10 group border-4 ${
                 connected
                   ? 'bg-gradient-to-tr from-emerald-600 via-teal-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 text-white border-emerald-400/40 shadow-emerald-950/80 ring-4 ring-emerald-500/20'
@@ -459,7 +422,7 @@ export default function App() {
             <div className="flex items-center justify-between text-[11px] text-slate-400">
               <span>Tráfico de Red</span>
               <span className="font-mono text-cyan-300">
-                {connected ? `${speedMBs} MB/s` : '0.00 MB/s'}
+                {connected ? `${speedMBs.toFixed(2)} MB/s` : '0.00 MB/s'}
               </span>
             </div>
             <div className="h-8 bg-slate-950 rounded-lg flex items-end gap-1 p-1 border border-slate-800/80">
@@ -491,110 +454,13 @@ export default function App() {
         isOpen={logsOpen}
         onClose={() => setLogsOpen(false)}
         logs={logs}
-        onClear={() => bridge.clearLogs()}
+        onClear={() => {
+          // clearLogs talks to the backend and rejects when it is unreachable.
+          bridge.clearLogs().catch((err: unknown) => {
+            setBackendError(err instanceof Error ? err.message : String(err));
+          });
+        }}
       />
-
-      {/* NTLMv2 Diagnostics Modal */}
-      {showDiag && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-in fade-in">
-          <div className="w-full max-w-lg bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-2xl space-y-5">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-              <div className="flex items-center gap-2.5">
-                <Activity className="w-5 h-5 text-cyan-400" />
-                <h3 className="font-bold text-sm text-slate-100">Sonda de Negociación NTLMv2</h3>
-              </div>
-              <button
-                onClick={() => setShowDiag(false)}
-                className="text-slate-400 hover:text-slate-200"
-              >
-                ✕
-              </button>
-            </div>
-
-            <p className="text-xs text-slate-400">
-              Verifica el pipeline de autenticación de UniTunnel contra Squid con drenaje de sockets y derivación de dominio Active Directory.
-            </p>
-
-            {/* Stepper */}
-            <div className="space-y-2.5 py-2">
-              <div className="flex items-center gap-3 text-xs">
-                <span
-                  className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold ${
-                    diagStep >= 1 ? 'bg-cyan-600 text-white' : 'bg-slate-800 text-slate-400'
-                  }`}
-                >
-                  1
-                </span>
-                <span className={diagStep >= 1 ? 'text-slate-200' : 'text-slate-500'}>
-                  Type-1 Negotiate: Enviar bandera NegotiateTargetInfo (0x00800000)
-                </span>
-              </div>
-              <div className="flex items-center gap-3 text-xs">
-                <span
-                  className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold ${
-                    diagStep >= 2 ? 'bg-cyan-600 text-white' : 'bg-slate-800 text-slate-400'
-                  }`}
-                >
-                  2
-                </span>
-                <span className={diagStep >= 2 ? 'text-slate-200' : 'text-slate-500'}>
-                  Type-2 Challenge: Recibir desafío Squid y drenar 3526 bytes HTML 407
-                </span>
-              </div>
-              <div className="flex items-center gap-3 text-xs">
-                <span
-                  className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold ${
-                    diagStep >= 3 ? 'bg-cyan-600 text-white' : 'bg-slate-800 text-slate-400'
-                  }`}
-                >
-                  3
-                </span>
-                <span className={diagStep >= 3 ? 'text-slate-200' : 'text-slate-500'}>
-                  Type-3 Authenticate: Generar hash HMAC-MD5 con NetBIOS UCI
-                </span>
-              </div>
-            </div>
-
-            {/* Diagnostic Result */}
-            {diagResult && (
-              <div
-                className={`p-4 rounded-xl border text-xs space-y-2 ${
-                  diagResult.success
-                    ? 'bg-emerald-950/30 border-emerald-800/60 text-emerald-200'
-                    : 'bg-amber-950/30 border-amber-800/60 text-amber-200'
-                }`}
-              >
-                <div className="flex items-center gap-2 font-bold">
-                  {diagResult.success ? (
-                    <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                  ) : (
-                    <AlertTriangle className="w-4 h-4 text-amber-400" />
-                  )}
-                  <span>
-                    {diagResult.success
-                      ? 'Negociación 200 OK Completada'
-                      : 'Circuito Anti-Bloqueo Activado'}
-                  </span>
-                </div>
-                <p className="text-[11px] leading-relaxed opacity-90">{diagResult.details}</p>
-                <div className="font-mono text-[10px] opacity-75 pt-1">
-                  Servidor: {diagResult.server} · Socket drenado: {diagResult.bodyDrained} bytes
-                </div>
-              </div>
-            )}
-
-            <div className="flex gap-2.5 pt-2">
-              <button
-                onClick={runDiagnostics}
-                disabled={diagRunning}
-                className="flex-1 py-2 px-3 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white font-medium text-xs transition disabled:opacity-50"
-              >
-                {diagRunning ? 'Verificando con Proxy y Cuota...' : 'Ejecutar Diagnóstico Real'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
