@@ -84,10 +84,8 @@ jobs:
             Write-Host "windres not found; using the committed rsrc_windows_amd64.syso."
           }
 
-      # The repository does not ship go.sum yet. The runner has open internet,
-      # so generate it here and upload it: download the `go-sum` artifact and
-      # commit unitunnel-go/go.sum. After that this step is a no-op and the
-      # build is fully reproducible.
+      # unitunnel-go/go.sum is committed (F0.1 closed in commit d9e728c), so no
+      # generation is needed here: the build is fully reproducible.
       - name: Prepare Go Modules
         working-directory: ./unitunnel-go
         run: |
