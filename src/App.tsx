@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Settings,
   Terminal,
@@ -7,6 +7,9 @@ import {
   Info,
   AlertTriangle,
   Power,
+  User,
+  ChevronDown,
+  Check,
 } from 'lucide-react';
 import {
   bridge,
@@ -22,6 +25,9 @@ import { reconnectReasons, reconnectWarning } from './services/configDiff';
 export default function App() {
   const [config, setConfig] = useState<AppConfig>(defaultConfig);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<'proxy' | 'accounts' | 'network' | 'system'>('proxy');
+  const [accountDropdownOpen, setAccountDropdownOpen] = useState(false);
+  const accountDropdownRef = useRef<HTMLDivElement>(null);
   const [logsOpen, setLogsOpen] = useState(false);
   const [logs, setLogs] = useState<string[]>([]);
   const [backendError, setBackendError] = useState<string | null>(null);
@@ -31,7 +37,7 @@ export default function App() {
   const [connecting, setConnecting] = useState(false);
   const [pingMs, setPingMs] = useState(0);
   const [speedMBs, setSpeedMBs] = useState(0);
-  const [speedHistory, setSpeedHistory] = useState<number[]>([0, 0, 0, 0, 0, 0, 0]);
+  const [speedHistory, setSpeedHistory] = useState<number[]>(Array(16).fill(0));
 
   // Quota state
   const [quota, setQuota] = useState<QuotaInfo>({
@@ -99,7 +105,7 @@ export default function App() {
         setConnected(stats.connected);
         setSpeedMBs(stats.speed_mbs);
         setPingMs(Number(stats.ping_ms));
-        setSpeedHistory((prev) => [...prev.slice(-12), stats.speed_mbs]);
+        setSpeedHistory((prev) => [...prev.slice(-15), stats.speed_mbs]);
       } catch {
         // ignore
       }
@@ -107,11 +113,31 @@ export default function App() {
     return () => clearInterval(interval);
   }, []);
 
+  // Close account dropdown on outside click
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (accountDropdownRef.current && !accountDropdownRef.current.contains(event.target as Node)) {
+        setAccountDropdownOpen(false);
+      }
+    }
+    if (accountDropdownOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [accountDropdownOpen]);
+
+  const openSettings = (tab: 'proxy' | 'accounts' | 'network' | 'system' = 'proxy') => {
+    setSettingsTab(tab);
+    setSettingsOpen(true);
+  };
+
   const activeAccount =
     config.accounts.find((a) => a.id === config.active_account_id) ||
     config.accounts[0] || {
       id: 'default',
-      name: 'Cuenta Principal',
+      name: 'Personal',
       username: '',
       domain: 'uci.cu',
     };
@@ -247,7 +273,7 @@ export default function App() {
         {/* Top Header Bar: Settings & Logs */}
         <div className="flex items-center justify-between py-2 border-b border-slate-900/80">
           <button
-            onClick={() => setSettingsOpen(true)}
+            onClick={() => openSettings('proxy')}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-200 border border-slate-800 transition text-xs font-semibold shadow-sm"
             title="Ajustes"
           >
@@ -255,9 +281,7 @@ export default function App() {
             <span>Ajustes</span>
           </button>
 
-          <div className="flex items-center gap-1.5">
-            <span className="font-bold text-xs tracking-tight text-slate-200 uppercase tracking-widest">UniTunnel</span>
-          </div>
+          <span className="font-bold text-xs tracking-tight text-slate-200 uppercase tracking-widest">UniTunnel</span>
 
           <button
             onClick={() => setLogsOpen(true)}
@@ -351,27 +375,98 @@ export default function App() {
             </div>
           </div>
 
-          {/* Account Selector */}
-          <div className="bg-slate-900/60 border border-slate-800/80 rounded-xl px-3.5 py-2.5 flex items-center justify-between text-xs">
-            <div className="flex items-center gap-2">
-              <span className="text-slate-400 text-[11px]">Cuenta:</span>
-              <span className="font-semibold text-slate-200">{activeAccount.name}</span>
-              <span className="font-mono text-cyan-300 text-[10px] bg-slate-950 px-1.5 py-0.5 rounded border border-slate-800">
-                {activeAccount.username}
-              </span>
-            </div>
-            {config.accounts.length > 1 && (
-              <select
-                value={config.active_account_id}
-                onChange={(e) => handleSwitchAccount(e.target.value)}
-                className="bg-slate-950 border border-slate-800 text-slate-300 text-[11px] rounded px-2 py-1 focus:outline-none focus:border-cyan-500 cursor-pointer"
-              >
-                {config.accounts.map((acc) => (
-                  <option key={acc.id} value={acc.id}>
-                    {acc.name}
-                  </option>
-                ))}
-              </select>
+          {/* Selector de cuenta simple */}
+          <div ref={accountDropdownRef} className="relative">
+            <button
+              type="button"
+              disabled={config.accounts.length <= 1}
+              onClick={() => setAccountDropdownOpen(!accountDropdownOpen)}
+              className={`w-full bg-slate-900/70 hover:bg-slate-900/90 border transition-all duration-200 rounded-xl p-2.5 flex items-center justify-between shadow-sm select-none text-left ${
+                config.accounts.length > 1 ? 'cursor-pointer' : 'cursor-default'
+              } ${
+                accountDropdownOpen
+                  ? 'border-cyan-500/70 ring-1 ring-cyan-500/30 bg-slate-900'
+                  : 'border-slate-800/80 hover:border-slate-700'
+              }`}
+            >
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-cyan-950 to-slate-900 border border-cyan-800/60 flex items-center justify-center text-cyan-400 shrink-0 shadow-inner">
+                  <User className="w-4 h-4" />
+                </div>
+                <div className="min-w-0 flex flex-col text-left flex-1 pr-2">
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <span className="text-xs font-bold text-slate-100 truncate">
+                      {activeAccount.name?.trim() || activeAccount.username?.trim() || 'Principal'}
+                    </span>
+                    <span className="text-[9px] px-1.5 py-0.2 rounded bg-emerald-950 text-emerald-400 border border-emerald-800/60 font-mono shrink-0">
+                      Activa
+                    </span>
+                  </div>
+                  <div className="font-mono text-slate-400 text-[11px] truncate">
+                    {activeAccount.username ? (
+                      <span>{activeAccount.username}<span className="text-slate-500">@{activeAccount.domain || 'uci.cu'}</span></span>
+                    ) : (
+                      <span className="text-slate-500 italic text-[10px]">Sin credenciales</span>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {config.accounts.length > 1 && (
+                <div className="flex items-center gap-1 px-2 py-1 rounded-lg bg-slate-950/80 border border-slate-800 text-[11px] text-slate-300 shrink-0">
+                  <span className="font-mono text-[10px] text-slate-400">{config.accounts.length}</span>
+                  <ChevronDown className={`w-3.5 h-3.5 text-slate-400 transition-transform duration-200 ${accountDropdownOpen ? 'rotate-180 text-cyan-400' : ''}`} />
+                </div>
+              )}
+            </button>
+
+            {/* Dropdown Menu - exclusivamente para cambiar entre cuentas */}
+            {accountDropdownOpen && config.accounts.length > 1 && (
+              <div className="absolute left-0 right-0 bottom-full mb-2 z-50 bg-slate-900/95 backdrop-blur-md border border-cyan-500/40 rounded-xl shadow-2xl p-1.5 animate-in fade-in zoom-in-95">
+                <div className="px-2 py-1 flex items-center justify-between border-b border-slate-800/80 mb-1">
+                  <span className="text-[10px] uppercase tracking-wider font-semibold text-slate-400">Seleccionar Cuenta</span>
+                  <span className="text-[10px] font-mono text-cyan-400">{config.accounts.length} disponibles</span>
+                </div>
+                
+                <div className="space-y-1 max-h-48 overflow-y-auto [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
+                  {config.accounts.map((acc, idx) => {
+                    const isCurrent = acc.id === config.active_account_id;
+                    const displayName = acc.name?.trim() || acc.username?.trim() || `Cuenta ${idx + 1}`;
+                    return (
+                      <button
+                        key={acc.id}
+                        type="button"
+                        onClick={() => {
+                          handleSwitchAccount(acc.id);
+                          setAccountDropdownOpen(false);
+                        }}
+                        className={`w-full text-left p-2 rounded-lg flex items-center justify-between transition-all ${
+                          isCurrent
+                            ? 'bg-cyan-950/60 border border-cyan-600/50 text-cyan-100 shadow-sm'
+                            : 'bg-slate-950/60 hover:bg-slate-800/80 border border-slate-800/60 hover:border-slate-700 text-slate-300'
+                        }`}
+                      >
+                        <div className="min-w-0 pr-2">
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-semibold text-xs text-slate-100 truncate">{displayName}</span>
+                            {isCurrent && (
+                              <span className="text-[9px] px-1 py-0.2 rounded bg-cyan-900 text-cyan-300 font-mono shrink-0">
+                                Activa
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-[11px] font-mono text-slate-400 truncate">
+                            {acc.username ? `${acc.username}@${acc.domain || 'uci.cu'}` : 'Sin usuario configurado'}
+                          </div>
+                        </div>
+                        {isCurrent && (
+                          <Check className="w-4 h-4 text-cyan-400 shrink-0" />
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
             )}
           </div>
 
@@ -418,23 +513,44 @@ export default function App() {
           </div>
 
           {/* Connection Sparkline Graph */}
-          <div className="bg-slate-900/60 border border-slate-800/80 rounded-xl p-2.5 space-y-1">
+          <div className="bg-slate-900/60 border border-slate-800/80 rounded-xl p-2.5 space-y-1.5">
             <div className="flex items-center justify-between text-[11px] text-slate-400">
-              <span>Tráfico de Red</span>
-              <span className="font-mono text-cyan-300">
+              <span className="flex items-center gap-1.5 font-medium">
+                <span className={`w-1.5 h-1.5 rounded-full transition-colors duration-300 ${connected ? 'bg-emerald-400 animate-pulse' : 'bg-slate-600'}`} />
+                Tráfico de Red
+              </span>
+              <span className="font-mono text-cyan-300 font-semibold transition-all duration-300">
                 {connected ? `${speedMBs.toFixed(2)} MB/s` : '0.00 MB/s'}
               </span>
             </div>
-            <div className="h-8 bg-slate-950 rounded-lg flex items-end gap-1 p-1 border border-slate-800/80">
-              {speedHistory.map((val, idx) => (
-                <div
-                  key={idx}
-                  className="flex-1 bg-gradient-to-t from-cyan-600 to-emerald-500 rounded-t transition-all duration-300"
-                  style={{
-                    height: connected ? `${Math.min(100, (val / 4) * 100)}%` : '4%',
-                  }}
-                />
-              ))}
+            <div className="h-10 bg-slate-950/90 rounded-lg flex items-end gap-1 p-1.5 border border-slate-800/80 overflow-hidden relative">
+              {/* Reference faint baseline / middle line */}
+              <div className="absolute inset-x-0 top-1/2 border-b border-dashed border-slate-800/40 pointer-events-none" />
+              {speedHistory.map((val, idx) => {
+                const maxVal = Math.max(...speedHistory, 1.5);
+                const heightPct = connected && val > 0
+                  ? Math.max(8, Math.min(100, (val / maxVal) * 100))
+                  : (connected ? 6 : 4);
+                const isLatest = idx === speedHistory.length - 1;
+
+                return (
+                  <div
+                    key={idx}
+                    title={`${val.toFixed(2)} MB/s`}
+                    className={`flex-1 rounded-t relative group ${
+                      connected
+                        ? isLatest
+                          ? 'bg-gradient-to-t from-cyan-500 via-emerald-400 to-emerald-300 shadow-[0_0_8px_rgba(52,211,153,0.35)]'
+                          : 'bg-gradient-to-t from-cyan-600/80 to-emerald-500/90 hover:brightness-125'
+                        : 'bg-slate-800/40'
+                    }`}
+                    style={{
+                      height: `${heightPct}%`,
+                      transition: 'height 500ms cubic-bezier(0.25, 0.1, 0.25, 1), background-color 300ms ease, box-shadow 300ms ease',
+                    }}
+                  />
+                );
+              })}
             </div>
           </div>
 
@@ -448,6 +564,7 @@ export default function App() {
         onClose={() => setSettingsOpen(false)}
         config={config}
         onSave={handleSaveConfig}
+        initialTab={settingsTab}
       />
 
       <LogsDrawer

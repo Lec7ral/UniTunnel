@@ -10,6 +10,8 @@ import {
   Server,
   Users,
   Shield,
+  ShieldCheck,
+  UserCheck,
   Sliders,
   Globe,
   Gauge,
@@ -18,6 +20,8 @@ import {
   HardDrive,
   Wifi,
   RefreshCw,
+  Info,
+  Tag,
 } from 'lucide-react';
 import { AppConfig, UserAccount, defaultConfig, bridge } from '../services/wailsBridge';
 import { reconnectReasons } from '../services/configDiff';
@@ -27,6 +31,7 @@ interface SettingsDrawerProps {
   onClose: () => void;
   config: AppConfig;
   onSave: (newConfig: AppConfig) => Promise<boolean>;
+  initialTab?: 'proxy' | 'accounts' | 'network' | 'system';
 }
 
 export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
@@ -34,9 +39,10 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
   onClose,
   config: initialConfig,
   onSave,
+  initialTab,
 }) => {
   const [cfg, setCfg] = useState<AppConfig>(initialConfig);
-  const [activeTab, setActiveTab] = useState<'proxy' | 'accounts' | 'network' | 'system'>('proxy');
+  const [activeTab, setActiveTab] = useState<'proxy' | 'accounts' | 'network' | 'system'>(initialTab || 'proxy');
   const [saving, setSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -53,12 +59,15 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
   // Synchronize when opened
   React.useEffect(() => {
     if (isOpen) {
+      if (initialTab) {
+        setActiveTab(initialTab);
+      }
       setCfg(initialConfig);
       setSaveSuccess(false);
       setSaveError(null);
       bridge.isHotspotForced().then(setForceHotspotActive).catch(() => {});
     }
-  }, [isOpen, initialConfig]);
+  }, [isOpen, initialConfig, initialTab]);
 
   const handleToggleForceHotspot = async () => {
     setForceHotspotLoading(true);
@@ -115,9 +124,10 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
 
   const handleAddAccount = () => {
     const newId = `acc_${Date.now()}`;
+    const nextNum = cfg.accounts.length + 1;
     const newAcc: UserAccount = {
       id: newId,
-      name: `Cuenta ${cfg.accounts.length + 1}`,
+      name: `Cuenta ${nextNum}`,
       username: '',
       domain: 'uci.cu',
       password: '',
@@ -125,7 +135,7 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
     setCfg((prev) => ({
       ...prev,
       accounts: [...prev.accounts, newAcc],
-      active_account_id: prev.active_account_id || newId,
+      active_account_id: prev.accounts.length === 0 ? newId : prev.active_account_id,
     }));
   };
 
@@ -398,12 +408,12 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
             <div className="space-y-4">
               <div className="flex items-center justify-between">
                 <div>
-                  <h3 className="font-semibold text-slate-200">Perfiles de Cuenta UCI</h3>
-                  <p className="text-[11px] text-slate-400">Permite alternar rápidamente entre cuentas sin reescribir contraseñas</p>
+                  <h3 className="font-semibold text-slate-200">Perfiles de Cuenta y Credenciales</h3>
+                  <p className="text-[11px] text-slate-400">Asigna etiquetas identificadoras (ej. Personal, Docencia) para alternar fácilmente</p>
                 </div>
                 <button
                   onClick={handleAddAccount}
-                  className="px-2.5 py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white font-medium flex items-center gap-1 transition"
+                  className="px-2.5 py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white font-medium flex items-center gap-1 transition shadow-sm"
                 >
                   <Plus className="w-3.5 h-3.5" />
                   Nueva Cuenta
@@ -414,86 +424,114 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
                 {cfg.accounts.map((acc, index) => {
                   const isActive = acc.id === cfg.active_account_id;
                   const showPass = !!showPasswordMap[acc.id];
+                  const displayName = acc.name?.trim() || acc.username?.trim() || `Cuenta ${index + 1}`;
                   return (
                     <div
                       key={acc.id}
                       className={`p-3.5 rounded-xl border transition ${
                         isActive
-                          ? 'bg-slate-950 border-cyan-500/60 shadow-sm shadow-cyan-950'
-                          : 'bg-slate-950/40 border-slate-800'
+                          ? 'bg-slate-950 border-cyan-500/60 shadow-sm shadow-cyan-950/80 ring-1 ring-cyan-500/20'
+                          : 'bg-slate-950/40 border-slate-800 hover:border-slate-700'
                       }`}
                     >
-                      <div className="flex items-center justify-between mb-2">
+                      {/* Account Card Header */}
+                      <div className="flex items-center justify-between mb-3 pb-2 border-b border-slate-800/80">
                         <div className="flex items-center gap-2">
                           <input
                             type="radio"
+                            id={`account-radio-${acc.id}`}
                             name="active_account"
                             checked={isActive}
                             onChange={() => setCfg({ ...cfg, active_account_id: acc.id })}
-                            className="text-cyan-500 focus:ring-0 w-3.5 h-3.5"
+                            className="text-cyan-500 focus:ring-0 w-3.5 h-3.5 cursor-pointer"
                           />
-                          <input
-                            type="text"
-                            value={acc.name}
-                            onChange={(e) => handleUpdateAccount(acc.id, { name: e.target.value })}
-                            placeholder={`Cuenta ${index + 1}`}
-                            className="bg-transparent font-semibold text-slate-100 text-xs focus:outline-none border-b border-transparent focus:border-cyan-500"
-                          />
-                          {isActive && (
-                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-cyan-950 text-cyan-400 border border-cyan-800/60 font-semibold">
-                              Activa
-                            </span>
-                          )}
+                          <label
+                            htmlFor={`account-radio-${acc.id}`}
+                            className="font-semibold text-slate-100 text-xs cursor-pointer flex items-center gap-1.5"
+                          >
+                            <span>{displayName}</span>
+                            {isActive ? (
+                              <span className="text-[10px] px-1.5 py-0.2 rounded bg-cyan-950 text-cyan-300 border border-cyan-800/60 font-semibold font-mono">
+                                Activa
+                              </span>
+                            ) : (
+                              <span className="text-[10px] text-slate-500 hover:text-cyan-400 font-normal transition">
+                                (Hacer activa)
+                              </span>
+                            )}
+                          </label>
                         </div>
 
                         {cfg.accounts.length > 1 && (
                           <button
+                            type="button"
                             onClick={() => handleDeleteAccount(acc.id)}
-                            className="text-slate-500 hover:text-red-400 p-1 transition"
-                            title="Eliminar cuenta"
+                            className="text-slate-500 hover:text-red-400 p-1 rounded hover:bg-slate-900 transition"
+                            title="Eliminar este perfil de cuenta"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>
                         )}
                       </div>
 
+                      {/* Explicit Account Name / Alias Field */}
+                      <div className="mb-3">
+                        <label className="text-[11px] text-slate-300 block mb-1 font-medium flex items-center justify-between">
+                          <span className="flex items-center gap-1.5 text-cyan-400 font-semibold">
+                            <Tag className="w-3.5 h-3.5" />
+                            Nombre personalizado (Alias):
+                          </span>
+                          <span className="text-[10px] text-slate-400 font-normal">Se muestra en el selector principal</span>
+                        </label>
+                        <input
+                          type="text"
+                          value={acc.name || ''}
+                          onChange={(e) => handleUpdateAccount(acc.id, { name: e.target.value })}
+                          placeholder="Ej. Personal, UCI Facultad, Docente, Proyecto..."
+                          className="w-full bg-slate-900 border border-slate-800 focus:border-cyan-500 rounded-lg px-2.5 py-1.5 text-slate-100 text-xs focus:outline-none transition placeholder:text-slate-600 font-medium"
+                        />
+                      </div>
+
+                      {/* Credentials: User & Domain */}
                       <div className="grid grid-cols-2 gap-2.5 pt-1">
                         <div>
-                          <label className="text-[11px] text-slate-400 block mb-0.5">Usuario:</label>
+                          <label className="text-[11px] text-slate-400 block mb-1">Usuario:</label>
                           <input
                             type="text"
                             value={acc.username}
                             onChange={(e) => handleUpdateAccount(acc.id, { username: e.target.value })}
                             placeholder="ej. usuario"
-                            className="w-full bg-slate-900 border border-slate-800 rounded px-2.5 py-1.5 font-mono text-slate-200 focus:outline-none focus:border-cyan-500"
+                            className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 font-mono text-slate-200 focus:outline-none focus:border-cyan-500"
                           />
                         </div>
                         <div>
-                          <label className="text-[11px] text-slate-400 block mb-0.5">Dominio (NetBIOS):</label>
+                          <label className="text-[11px] text-slate-400 block mb-1">Dominio (NetBIOS):</label>
                           <input
                             type="text"
                             value={acc.domain}
                             onChange={(e) => handleUpdateAccount(acc.id, { domain: e.target.value })}
                             placeholder="uci.cu o UCI"
-                            className="w-full bg-slate-900 border border-slate-800 rounded px-2.5 py-1.5 font-mono text-slate-200 focus:outline-none focus:border-cyan-500"
+                            className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 font-mono text-slate-200 focus:outline-none focus:border-cyan-500"
                           />
                         </div>
                       </div>
 
+                      {/* Password */}
                       <div className="mt-2.5">
-                        <label className="text-[11px] text-slate-400 block mb-0.5">Contraseña:</label>
+                        <label className="text-[11px] text-slate-400 block mb-1">Contraseña:</label>
                         <div className="relative">
                           <input
                             type={showPass ? 'text' : 'password'}
                             value={acc.password || ''}
                             onChange={(e) => handleUpdateAccount(acc.id, { password: e.target.value })}
                             placeholder="Contraseña institucional"
-                            className="w-full bg-slate-900 border border-slate-800 rounded px-2.5 py-1.5 font-mono text-slate-200 pr-8 focus:outline-none focus:border-cyan-500"
+                            className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 font-mono text-slate-200 pr-8 focus:outline-none focus:border-cyan-500"
                           />
                           <button
                             type="button"
                             onClick={() => togglePasswordVisibility(acc.id)}
-                            className="absolute right-2 top-2 text-slate-400 hover:text-slate-200"
+                            className="absolute right-2.5 top-2 text-slate-400 hover:text-slate-200"
+                            title={showPass ? 'Ocultar contraseña' : 'Ver contraseña'}
                           >
                             {showPass ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
                           </button>
@@ -738,6 +776,56 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
                 <p className="text-[11px] text-slate-500">
                   Cualquier cambio guardado desde este panel se sincroniza de inmediato con el archivo JSON y con el backend de Go.
                 </p>
+              </div>
+
+              {/* Acerca de UniTunnel / Información del Sistema */}
+              <div className="p-4 rounded-xl bg-gradient-to-b from-slate-950/90 to-slate-900/70 border border-cyan-900/40 shadow-lg shadow-black/40 space-y-3.5">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-cyan-600 via-teal-600 to-emerald-600 flex items-center justify-center text-white shadow-lg shadow-cyan-950/80 shrink-0 border border-cyan-400/30">
+                    <ShieldCheck className="w-5 h-5 text-white" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <h4 className="font-bold text-slate-100 text-sm tracking-tight">UniTunnel Desktop</h4>
+                      <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-cyan-950 text-cyan-300 border border-cyan-800/60 font-semibold">
+                        v2.4.0
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-400 truncate">
+                      Acceso Universitario & Túnel de Red Transparente
+                    </p>
+                  </div>
+                </div>
+
+                <p className="text-[11px] text-slate-300 leading-relaxed">
+                  Diseñado para la comunidad de la <strong>Universidad de las Ciencias Informáticas (UCI)</strong>. Proporciona enrutamiento de capa 3 con adaptador Wintun nativo, autenticación NTLMv2 automática en servidores Squid y bypass de Wi-Fi Direct.
+                </p>
+
+                <div className="grid grid-cols-2 gap-2 text-[10px] font-mono pt-1">
+                  <div className="p-2 rounded-lg bg-slate-900/90 border border-slate-800 space-y-0.5">
+                    <span className="text-slate-500 uppercase tracking-wider block text-[9px] font-sans font-semibold">Plataforma</span>
+                    <span className="text-slate-200">Windows 10 / 11 (x64)</span>
+                  </div>
+                  <div className="p-2 rounded-lg bg-slate-900/90 border border-slate-800 space-y-0.5">
+                    <span className="text-slate-500 uppercase tracking-wider block text-[9px] font-sans font-semibold">Desarrollo</span>
+                    <span className="text-cyan-400 font-sans font-medium">Yoan B. · Red UCI</span>
+                  </div>
+                  <div className="p-2 rounded-lg bg-slate-900/90 border border-slate-800 space-y-0.5">
+                    <span className="text-slate-500 uppercase tracking-wider block text-[9px] font-sans font-semibold">Core & Runtime</span>
+                    <span className="text-slate-200">Go 1.23 · Wails v3 Alpha</span>
+                  </div>
+                  <div className="p-2 rounded-lg bg-slate-900/90 border border-slate-800 space-y-0.5">
+                    <span className="text-slate-500 uppercase tracking-wider block text-[9px] font-sans font-semibold">Driver L3 Virtual</span>
+                    <span className="text-emerald-400">Wintun 0.14.1 TUN</span>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-1.5 pt-1 text-[10px] text-slate-400">
+                  <span className="px-2 py-0.5 rounded-md bg-slate-900 border border-slate-800/90 text-slate-300">Squid NTLMv2</span>
+                  <span className="px-2 py-0.5 rounded-md bg-slate-900 border border-slate-800/90 text-slate-300">SOCKS5 & HTTP</span>
+                  <span className="px-2 py-0.5 rounded-md bg-slate-900 border border-slate-800/90 text-slate-300">SoftAP Wi-Fi Direct</span>
+                  <span className="px-2 py-0.5 rounded-md bg-slate-900 border border-slate-800/90 text-emerald-400">Software Libre Académico</span>
+                </div>
               </div>
             </div>
           )}

@@ -72,7 +72,7 @@ func DefaultConfig() *Config {
 		Accounts: []UserAccount{
 			{
 				ID:       "default",
-				Name:     "Cuenta Principal",
+				Name:     "Personal",
 				Username: "",
 				Domain:   "uci.cu",
 				Password: "",

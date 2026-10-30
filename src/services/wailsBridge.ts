@@ -101,7 +101,7 @@ export const defaultConfig: AppConfig = {
   accounts: [
     {
       id: 'default',
-      name: 'Cuenta Institucional',
+      name: 'Personal',
       username: '',
       domain: 'uci.cu',
       password: '',
