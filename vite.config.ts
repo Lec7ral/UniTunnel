@@ -39,8 +39,7 @@ export default defineConfig({
     // The Go binary embeds unitunnel-go/dist via `//go:embed all:dist`
     // (unitunnel-go/main.go). Building anywhere else produces an .exe with an
     // empty frontend, so this path must stay in sync with that directive.
-    outDir: '../unitunnel-go/dist',
-    // dist lives outside the Vite root, so clearing it must be opt-in.
+    outDir: 'unitunnel-go/dist',
     emptyOutDir: true,
     sourcemap: false,
   },
