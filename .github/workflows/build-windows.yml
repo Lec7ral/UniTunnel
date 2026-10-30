@@ -31,7 +31,7 @@ jobs:
           cache: 'npm'
 
       - name: Install Frontend Dependencies
-        run: npm ci || npm install
+        run: npm ci
 
       # Non-blocking on purpose: `vite build` does not type-check, so a type
       # error must not prevent producing a working .exe on the first run. Make
