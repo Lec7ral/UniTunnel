@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"unitunnel/pkg/traffic"
 )
@@ -88,7 +89,16 @@ func (s *HTTPProxyServer) handleClient(clientConn net.Conn) {
 			target += ":443"
 		}
 
-		remoteConn, err := s.dialer.Dial("tcp", target)
+		var remoteConn net.Conn
+		var err error
+		if IsCampusBypass(req.Host) {
+			remoteConn, err = net.DialTimeout("tcp", target, 10*time.Second)
+			if err != nil && s.OnEvent != nil {
+				s.OnEvent(fmt.Sprintf("[Bypass Intranet UCI] Error conectando directo a %s: %v", target, err))
+			}
+		} else {
+			remoteConn, err = s.dialer.Dial("tcp", target)
+		}
 		if err != nil {
 			_, _ = clientConn.Write([]byte("HTTP/1.1 502 Bad Gateway\r\n\r\n"))
 			return
@@ -105,8 +115,38 @@ func (s *HTTPProxyServer) handleClient(clientConn net.Conn) {
 	}
 
 	// Case 2: Plain HTTP requests (GET, POST, etc.)
-	// Squid denies CONNECT to port 80, so the request is forwarded with an
-	// absolute URI instead of being tunneled.
+	if IsCampusBypass(req.Host) {
+		// Forward campus request directly without going through Squid
+		directTransport := &http.Transport{
+			Proxy: nil,
+			ResponseHeaderTimeout: 15 * time.Second,
+		}
+		outReq := req.Clone(req.Context())
+		if outReq.URL.Scheme == "" {
+			outReq.URL.Scheme = "http"
+		}
+		if outReq.URL.Host == "" {
+			outReq.URL.Host = req.Host
+		}
+		outReq.RequestURI = ""
+		resp, err := directTransport.RoundTrip(outReq)
+		if err != nil {
+			if s.OnEvent != nil {
+				s.OnEvent(fmt.Sprintf("[Bypass Intranet UCI] HTTP %s → %v", req.Host, err))
+			}
+			_, _ = clientConn.Write([]byte("HTTP/1.1 502 Bad Gateway\r\n\r\n"))
+			return
+		}
+		defer resp.Body.Close()
+
+		if err := resp.Write(clientConn); err != nil {
+			return
+		}
+		return
+	}
+
+	// Squid denies CONNECT to port 80, so external HTTP is forwarded with an
+	// absolute URI via the authenticated dialer.
 	resp, err := s.dialer.DoHTTP(req)
 	if err != nil {
 		if s.OnEvent != nil {

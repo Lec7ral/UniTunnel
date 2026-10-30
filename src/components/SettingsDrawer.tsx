@@ -615,41 +615,54 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
               {/* Bypass Routes */}
               <div className="p-3.5 rounded-xl bg-slate-950/60 border border-slate-800 space-y-3">
                 <div className="flex items-center justify-between">
-                  <h3 className="font-semibold text-slate-200">Rutas Excluidas (Bypass LAN / Intranet)</h3>
-                  <span className="text-[11px] text-slate-400">Tráfico directo sin pasar por el túnel</span>
+                  <h3 className="font-semibold text-slate-200">Rutas y Dominios Excluidos (Bypass)</h3>
+                  <span className="text-[11px] text-cyan-400 font-medium">Bypass directo a intranet</span>
                 </div>
+
+                <p className="text-[11px] text-slate-400 leading-relaxed">
+                  Los servicios del campus universitario (<span className="text-cyan-300 font-mono font-semibold">*uci.cu</span>) y redes privadas se excluyen obligatoriamente del proxy para evitar errores 403 y permitir acceso directo a Cuota, Moodle, Correo, etc.
+                </p>
 
                 <div className="flex gap-2">
                   <input
                     type="text"
                     value={newBypassInput}
                     onChange={(e) => setNewBypassInput(e.target.value)}
-                    placeholder="ej. 10.0.0.0/8 o 192.168.1.0/24"
-                    className="flex-1 bg-slate-900 border border-slate-800 rounded-lg px-3 py-1.5 font-mono text-slate-200 focus:outline-none focus:border-cyan-500"
+                    placeholder="ej. *uci.cu, 10.0.0.0/8 o 192.168.1.0/24"
+                    className="flex-1 bg-slate-900 border border-slate-800 rounded-lg px-3 py-1.5 font-mono text-slate-200 focus:outline-none focus:border-cyan-500 text-xs"
                   />
                   <button
                     onClick={handleAddBypass}
-                    className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-cyan-300 font-medium transition"
+                    className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-cyan-300 font-medium transition text-xs"
                   >
                     Añadir
                   </button>
                 </div>
 
                 <div className="flex flex-wrap gap-1.5 pt-1">
-                  {cfg.bypass_routes.map((route) => (
-                    <span
-                      key={route}
-                      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-900 border border-slate-800 text-slate-300 font-mono text-[11px]"
-                    >
-                      {route}
-                      <button
-                        onClick={() => handleRemoveBypass(route)}
-                        className="text-slate-500 hover:text-red-400"
+                  {cfg.bypass_routes.map((route) => {
+                    const isUci = route.includes('uci.cu');
+                    return (
+                      <span
+                        key={route}
+                        className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border font-mono text-[11px] ${
+                          isUci
+                            ? 'bg-cyan-950/70 border-cyan-600/50 text-cyan-200 font-semibold'
+                            : 'bg-slate-900 border-slate-800 text-slate-300'
+                        }`}
                       >
-                        <X className="w-3 h-3" />
-                      </button>
-                    </span>
-                  ))}
+                        {isUci && <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 shrink-0" />}
+                        {route}
+                        <button
+                          onClick={() => handleRemoveBypass(route)}
+                          className="text-slate-500 hover:text-red-400 ml-0.5"
+                          title="Eliminar regla de bypass"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      </span>
+                    );
+                  })}
                 </div>
               </div>
             </div>

@@ -176,17 +176,33 @@ func (s *SOCKS5Server) handleClient(conn net.Conn) {
 			target = net.JoinHostPort(sni, strconv.Itoa(int(port)))
 			RecordDNSMapping(host, sni)
 			if s.OnEvent != nil {
-				s.OnEvent(fmt.Sprintf("✓ [SNI Sniff] IP %s traducida a '%s' para evadir bloqueo Squid", host, sni))
+				s.OnEvent(fmt.Sprintf("✓ [SNI Sniff] IP %s traducida a '%s'", host, sni))
 			}
 		}
 
-		remoteConn, err := s.dialer.Dial("tcp", target)
-		if err != nil {
-			locked, _ := s.dialer.IsAuthLocked()
-			if !locked && s.OnEvent != nil {
-				s.OnEvent(fmt.Sprintf("[SOCKS5 Error] Falló conexión a %s: %v", target, err))
+		var remoteConn net.Conn
+		if IsCampusBypass(sni) || IsCampusBypass(host) {
+			directConn, dErr := net.DialTimeout("tcp", target, 10*time.Second)
+			if dErr != nil {
+				if s.OnEvent != nil {
+					s.OnEvent(fmt.Sprintf("[Bypass UCI] Error directo a %s: %v", target, dErr))
+				}
+				return
 			}
-			return
+			remoteConn = directConn
+			if s.OnEvent != nil {
+				s.OnEvent(fmt.Sprintf("✓ [Bypass Intranet UCI] Conexión local directa a %s (excluido de Squid)", target))
+			}
+		} else {
+			var dialErr error
+			remoteConn, dialErr = s.dialer.Dial("tcp", target)
+			if dialErr != nil {
+				locked, _ := s.dialer.IsAuthLocked()
+				if !locked && s.OnEvent != nil {
+					s.OnEvent(fmt.Sprintf("[SOCKS5 Error] Falló conexión a %s: %v", target, dialErr))
+				}
+				return
+			}
 		}
 		defer remoteConn.Close()
 
@@ -200,14 +216,31 @@ func (s *SOCKS5Server) handleClient(conn net.Conn) {
 	}
 
 	// Step 3: Standard connection (Domain already known, or non-443 port)
-	remoteConn, err := s.dialer.Dial("tcp", target)
-	if err != nil {
-		_, _ = conn.Write([]byte{0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
-		locked, _ := s.dialer.IsAuthLocked()
-		if !locked && s.OnEvent != nil {
-			s.OnEvent(fmt.Sprintf("[SOCKS5 Error] Falló conexión a %s: %v", target, err))
+	var remoteConn net.Conn
+	if IsCampusBypass(host) {
+		directConn, dErr := net.DialTimeout("tcp", target, 10*time.Second)
+		if dErr != nil {
+			_, _ = conn.Write([]byte{0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+			if s.OnEvent != nil {
+				s.OnEvent(fmt.Sprintf("[Bypass UCI] Error directo a %s: %v", target, dErr))
+			}
+			return
 		}
-		return
+		remoteConn = directConn
+		if s.OnEvent != nil {
+			s.OnEvent(fmt.Sprintf("✓ [Bypass Intranet UCI] Conexión local directa a %s (excluido de Squid)", target))
+		}
+	} else {
+		var dialErr error
+		remoteConn, dialErr = s.dialer.Dial("tcp", target)
+		if dialErr != nil {
+			_, _ = conn.Write([]byte{0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+			locked, _ := s.dialer.IsAuthLocked()
+			if !locked && s.OnEvent != nil {
+				s.OnEvent(fmt.Sprintf("[SOCKS5 Error] Falló conexión a %s: %v", target, dialErr))
+			}
+			return
+		}
 	}
 	defer remoteConn.Close()
 

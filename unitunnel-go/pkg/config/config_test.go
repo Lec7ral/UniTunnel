@@ -49,6 +49,14 @@ func TestValidateRejectsBrokenConfigs(t *testing.T) {
 	}
 }
 
+func TestValidateAcceptsDomainBypasses(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.BypassRoutes = []string{"*uci.cu", "*.uci.cu", "cuota.uci.cu", "10.0.0.0/8"}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() rechazó rutas de bypass de dominio válidas: %v", err)
+	}
+}
+
 // A config written by the app must load back identically: credentials, routes
 // and ports are all the user has to re-enter if this breaks.
 func TestConfigJSONRoundTrip(t *testing.T) {

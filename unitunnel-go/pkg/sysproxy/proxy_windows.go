@@ -58,8 +58,8 @@ func EnableSystemProxy(httpPort, socksPort int) error {
 		return err
 	}
 
-	// Bypass local addresses
-	_ = k.SetStringValue("ProxyOverride", "localhost;127.*;10.*;192.168.*;172.16.*;<local>")
+	// Bypass local addresses and UCI intranet (*uci.cu, *.uci.cu)
+	_ = k.SetStringValue("ProxyOverride", "*uci.cu;*.uci.cu;localhost;127.*;10.*;192.168.*;172.16.*;<local>")
 
 	// Refresh system settings
 	refreshWinINet()
@@ -82,7 +82,7 @@ func EnableUWPStoreExemption() {
 	_ = cmd.Run()
 }
 
-// SetConsoleEnvironmentProxies sets HTTP_PROXY and ALL_PROXY in Windows User Environment
+// SetConsoleEnvironmentProxies sets HTTP_PROXY, ALL_PROXY and NO_PROXY in Windows User Environment
 func SetConsoleEnvironmentProxies(httpPort, socksPort int) {
 	k, err := registry.OpenKey(registry.CURRENT_USER, `Environment`, registry.SET_VALUE)
 	if err != nil {
@@ -92,6 +92,7 @@ func SetConsoleEnvironmentProxies(httpPort, socksPort int) {
 
 	httpURL := fmt.Sprintf("http://127.0.0.1:%d", httpPort)
 	socksURL := fmt.Sprintf("socks5://127.0.0.1:%d", socksPort)
+	noProxy := "localhost,127.0.0.1,*.uci.cu,*uci.cu,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
 
 	_ = k.SetStringValue("HTTP_PROXY", httpURL)
 	_ = k.SetStringValue("HTTPS_PROXY", httpURL)
@@ -99,6 +100,8 @@ func SetConsoleEnvironmentProxies(httpPort, socksPort int) {
 	_ = k.SetStringValue("http_proxy", httpURL)
 	_ = k.SetStringValue("https_proxy", httpURL)
 	_ = k.SetStringValue("all_proxy", socksURL)
+	_ = k.SetStringValue("NO_PROXY", noProxy)
+	_ = k.SetStringValue("no_proxy", noProxy)
 }
 
 // RemoveConsoleEnvironmentProxies cleans up console proxy variables from User Environment
@@ -115,6 +118,8 @@ func RemoveConsoleEnvironmentProxies() {
 	_ = k.DeleteValue("http_proxy")
 	_ = k.DeleteValue("https_proxy")
 	_ = k.DeleteValue("all_proxy")
+	_ = k.DeleteValue("NO_PROXY")
+	_ = k.DeleteValue("no_proxy")
 }
 
 // DisableSystemProxy restores the proxy configuration captured by

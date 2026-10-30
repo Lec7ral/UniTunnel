@@ -22,6 +22,18 @@ import { SettingsDrawer } from './components/SettingsDrawer';
 import { LogsDrawer } from './components/LogsDrawer';
 import { reconnectReasons, reconnectWarning } from './services/configDiff';
 
+function formatSpeed(mbPerSec: number): string {
+  if (mbPerSec <= 0) return '0.00 KB/s';
+  const kb = mbPerSec * 1024;
+  if (kb < 1) {
+    return `${(kb * 1024).toFixed(0)} B/s`;
+  }
+  if (mbPerSec < 1) {
+    return `${kb.toFixed(1)} KB/s`;
+  }
+  return `${mbPerSec.toFixed(2)} MB/s`;
+}
+
 export default function App() {
   const [config, setConfig] = useState<AppConfig>(defaultConfig);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -512,47 +524,63 @@ export default function App() {
             </div>
           </div>
 
-          {/* Connection Sparkline Graph */}
-          <div className="bg-slate-900/60 border border-slate-800/80 rounded-xl p-2.5 space-y-1.5">
-            <div className="flex items-center justify-between text-[11px] text-slate-400">
-              <span className="flex items-center gap-1.5 font-medium">
-                <span className={`w-1.5 h-1.5 rounded-full transition-colors duration-300 ${connected ? 'bg-emerald-400 animate-pulse' : 'bg-slate-600'}`} />
-                Tráfico de Red
-              </span>
-              <span className="font-mono text-cyan-300 font-semibold transition-all duration-300">
-                {connected ? `${speedMBs.toFixed(2)} MB/s` : '0.00 MB/s'}
-              </span>
-            </div>
-            <div className="h-10 bg-slate-950/90 rounded-lg flex items-end gap-1 p-1.5 border border-slate-800/80 overflow-hidden relative">
-              {/* Reference faint baseline / middle line */}
-              <div className="absolute inset-x-0 top-1/2 border-b border-dashed border-slate-800/40 pointer-events-none" />
-              {speedHistory.map((val, idx) => {
-                const maxVal = Math.max(...speedHistory, 1.5);
-                const heightPct = connected && val > 0
-                  ? Math.max(8, Math.min(100, (val / maxVal) * 100))
-                  : (connected ? 6 : 4);
-                const isLatest = idx === speedHistory.length - 1;
+          {/* Connection Sparkline Graph con Techo Dinámico */}
+          {(() => {
+            const peakRecentSpeed = Math.max(...speedHistory, 0);
+            // Techo dinámico: piso de 0.04 MB/s (~40 KB/s) para que el tráfico bajo (< 1 MB)
+            // ocupe barras altas y proporcionales; escala dinámicamente con margen al pico reciente
+            const dynamicCeiling = Math.max(0.04, peakRecentSpeed * 1.25);
 
-                return (
-                  <div
-                    key={idx}
-                    title={`${val.toFixed(2)} MB/s`}
-                    className={`flex-1 rounded-t relative group ${
-                      connected
-                        ? isLatest
-                          ? 'bg-gradient-to-t from-cyan-500 via-emerald-400 to-emerald-300 shadow-[0_0_8px_rgba(52,211,153,0.35)]'
-                          : 'bg-gradient-to-t from-cyan-600/80 to-emerald-500/90 hover:brightness-125'
-                        : 'bg-slate-800/40'
-                    }`}
-                    style={{
-                      height: `${heightPct}%`,
-                      transition: 'height 500ms cubic-bezier(0.25, 0.1, 0.25, 1), background-color 300ms ease, box-shadow 300ms ease',
-                    }}
-                  />
-                );
-              })}
-            </div>
-          </div>
+            return (
+              <div className="bg-slate-900/60 border border-slate-800/80 rounded-xl p-2.5 space-y-1.5">
+                <div className="flex items-center justify-between text-[11px] text-slate-400">
+                  <div className="flex items-center gap-1.5 font-medium">
+                    <span className={`w-1.5 h-1.5 rounded-full transition-colors duration-300 ${connected ? 'bg-emerald-400 animate-pulse' : 'bg-slate-600'}`} />
+                    <span>Tráfico de Red</span>
+                    {connected && (
+                      <span
+                        className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-slate-950 text-cyan-400 border border-slate-800"
+                        title="Techo dinámico adaptativo según consumo reciente"
+                      >
+                        Techo: {formatSpeed(dynamicCeiling)}
+                      </span>
+                    )}
+                  </div>
+                  <span className="font-mono text-cyan-300 font-semibold transition-all duration-300">
+                    {connected ? formatSpeed(speedMBs) : '0.00 KB/s'}
+                  </span>
+                </div>
+                <div className="h-10 bg-slate-950/90 rounded-lg flex items-end gap-1 p-1.5 border border-slate-800/80 overflow-hidden relative">
+                  {/* Reference faint baseline / middle line */}
+                  <div className="absolute inset-x-0 top-1/2 border-b border-dashed border-slate-800/40 pointer-events-none" />
+                  {speedHistory.map((val, idx) => {
+                    const heightPct = connected && val > 0
+                      ? Math.max(12, Math.min(100, (val / dynamicCeiling) * 100))
+                      : (connected ? 6 : 4);
+                    const isLatest = idx === speedHistory.length - 1;
+
+                    return (
+                      <div
+                        key={idx}
+                        title={`${formatSpeed(val)} (Escala máx: ${formatSpeed(dynamicCeiling)})`}
+                        className={`flex-1 rounded-t relative group ${
+                          connected
+                            ? isLatest
+                              ? 'bg-gradient-to-t from-cyan-500 via-emerald-400 to-emerald-300 shadow-[0_0_8px_rgba(52,211,153,0.35)]'
+                              : 'bg-gradient-to-t from-cyan-600/80 to-emerald-500/90 hover:brightness-125'
+                            : 'bg-slate-800/40'
+                        }`}
+                        style={{
+                          height: `${heightPct}%`,
+                          transition: 'height 450ms cubic-bezier(0.2, 0.8, 0.2, 1), background-color 300ms ease, box-shadow 300ms ease',
+                        }}
+                      />
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })()}
 
         </div>
 

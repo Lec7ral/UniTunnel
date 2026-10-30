@@ -114,7 +114,7 @@ export const defaultConfig: AppConfig = {
   tun_ipv4: '10.254.1.2',
   tun_mask: '255.255.255.0',
   tun_dns: '1.1.1.1,8.8.8.8',
-  bypass_routes: ['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16'],
+  bypass_routes: ['*uci.cu', '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16'],
   network_mode: 'uci_cable',
   quota_url: 'https://cuota.uci.cu/',
   auto_check_quota: true,

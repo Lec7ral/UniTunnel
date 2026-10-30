@@ -86,6 +86,7 @@ func DefaultConfig() *Config {
 		TunMask:        "255.255.255.0",
 		TunDNS:         "1.1.1.1,8.8.8.8",
 		BypassRoutes: []string{
+			"*uci.cu",
 			"10.0.0.0/8",
 			"172.16.0.0/12",
 			"192.168.0.0/16",
@@ -139,9 +140,19 @@ func (c *Config) Validate() error {
 		}
 	}
 
-	for _, cidr := range c.BypassRoutes {
-		if _, _, err := net.ParseCIDR(strings.TrimSpace(cidr)); err != nil {
-			return fmt.Errorf("ruta de bypass inválida %q: %w", cidr, err)
+	for _, entry := range c.BypassRoutes {
+		trimmed := strings.TrimSpace(entry)
+		if trimmed == "" {
+			continue
+		}
+		// Allow domain wildcards or hostnames (e.g. *uci.cu, *.uci.cu, uci.cu)
+		if strings.Contains(trimmed, "*") || (strings.Contains(trimmed, ".") && !strings.Contains(trimmed, "/") && net.ParseIP(trimmed) == nil) {
+			continue
+		}
+		if _, _, err := net.ParseCIDR(trimmed); err != nil {
+			if ip := net.ParseIP(trimmed); ip == nil {
+				return fmt.Errorf("ruta de bypass inválida %q: %w", entry, err)
+			}
 		}
 	}
 
