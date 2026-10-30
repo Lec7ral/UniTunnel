@@ -61,6 +61,10 @@ type AppService struct {
 	onStatusChange      func(connected bool, status string)
 	onNetworkModeChange func(mode string)
 	onAlwaysOnTopChange func(pinned bool)
+	onQuotaChange       func(info *quota.QuotaInfo)
+	onAccountChange     func(activeID string)
+	onWindowMinimize    func()
+	onWindowHide        func()
 }
 
 func NewAppService(cfg *config.Config) *AppService {
@@ -74,10 +78,45 @@ func NewAppService(cfg *config.Config) *AppService {
 	}
 }
 
-func (s *AppService) SetCallbacks(onStatus func(bool, string), onMode func(string), onAlwaysOnTop func(bool)) {
+func (s *AppService) SetCallbacks(
+	onStatus func(bool, string),
+	onMode func(string),
+	onAlwaysOnTop func(bool),
+	onQuota func(info *quota.QuotaInfo),
+	onAccount func(activeID string),
+) {
 	s.onStatusChange = onStatus
 	s.onNetworkModeChange = onMode
 	s.onAlwaysOnTopChange = onAlwaysOnTop
+	s.onQuotaChange = onQuota
+	s.onAccountChange = onAccount
+}
+
+func (s *AppService) SetWindowCallbacks(onMinimize func(), onHide func()) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.onWindowMinimize = onMinimize
+	s.onWindowHide = onHide
+}
+
+// WindowMinimize minimizes the frameless window to taskbar
+func (s *AppService) WindowMinimize() {
+	s.mu.Lock()
+	fn := s.onWindowMinimize
+	s.mu.Unlock()
+	if fn != nil {
+		fn()
+	}
+}
+
+// WindowHide hides the frameless window to system tray
+func (s *AppService) WindowHide() {
+	s.mu.Lock()
+	fn := s.onWindowHide
+	s.mu.Unlock()
+	if fn != nil {
+		fn()
+	}
 }
 
 func (s *AppService) AddLog(category, msg string) {
@@ -123,7 +162,61 @@ func (s *AppService) SaveConfig(newCfg *config.Config) error {
 	s.mu.Unlock()
 
 	s.AddLog("CONFIG", "Configuración actualizada y guardada correctamente en config.json")
+	if s.onAccountChange != nil {
+		s.onAccountChange(newCfg.ActiveAccountID)
+	}
 	return nil
+}
+
+// GetAccounts returns the current accounts list
+func (s *AppService) GetAccounts() []config.Account {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cfg == nil {
+		return nil
+	}
+	copied := make([]config.Account, len(s.cfg.Accounts))
+	copy(copied, s.cfg.Accounts)
+	return copied
+}
+
+// GetActiveAccountID returns active account ID
+func (s *AppService) GetActiveAccountID() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cfg == nil {
+		return ""
+	}
+	return s.cfg.ActiveAccountID
+}
+
+// SetActiveAccountID changes active account ID and saves config
+func (s *AppService) SetActiveAccountID(id string) error {
+	s.mu.Lock()
+	if s.cfg == nil {
+		s.mu.Unlock()
+		return fmt.Errorf("configuración no cargada")
+	}
+	for i := range s.cfg.Accounts {
+		if s.cfg.Accounts[i].ID == id {
+			s.cfg.ActiveAccountID = id
+			accName := s.cfg.Accounts[i].Name
+			if accName == "" {
+				accName = s.cfg.Accounts[i].Username
+			}
+			_ = config.SaveConfig(s.cfg)
+			cbAccount := s.onAccountChange
+			s.mu.Unlock()
+
+			s.AddLog("CUENTA", fmt.Sprintf("Perfil de cuenta cambiado a: '%s'", accName))
+			if cbAccount != nil {
+				cbAccount(id)
+			}
+			return nil
+		}
+	}
+	s.mu.Unlock()
+	return fmt.Errorf("cuenta no encontrada")
 }
 
 // GetNetworkMode returns the active network mode
@@ -488,6 +581,13 @@ func (s *AppService) CheckQuota() (*quota.QuotaInfo, error) {
 
 	if info.RawResponse != "" {
 		s.AddLog("CUOTA-RAW", fmt.Sprintf("Respuesta servidor (%d bytes): %s", len(info.RawResponse), info.RawResponse))
+	}
+
+	s.mu.Lock()
+	cbQuota := s.onQuotaChange
+	s.mu.Unlock()
+	if cbQuota != nil {
+		cbQuota(info)
 	}
 	return info, nil
 }

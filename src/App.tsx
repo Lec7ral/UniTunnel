@@ -11,6 +11,8 @@ import {
   ChevronDown,
   Check,
   Code,
+  Minus,
+  X,
 } from 'lucide-react';
 import {
   bridge,
@@ -282,23 +284,28 @@ export default function App() {
         </div>
       )}
 
-      {/* Unified Android App Container */}
-      <main className="flex-1 w-full max-w-md mx-auto flex flex-col p-4 justify-between overflow-y-auto [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
-        
-        {/* Top Header Bar: Settings & Logs */}
-        <div className="flex items-center justify-between py-2 border-b border-slate-900/80">
-          <button
-            onClick={() => openSettings('proxy')}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-200 border border-slate-800 transition text-xs font-semibold shadow-sm"
-            title="Ajustes"
-          >
-            <Settings className="w-3.5 h-3.5 text-cyan-400" />
-            <span>Ajustes</span>
-          </button>
-
+      {/* Frameless Custom TitleBar (Draggable) */}
+      <header
+        className="w-full bg-slate-950/95 border-b border-slate-900/90 px-3.5 py-2 flex items-center justify-between select-none z-50 shrink-0"
+        style={{
+          ['--wails-draggable' as string]: 'drag',
+          WebkitAppRegion: 'drag',
+        } as React.CSSProperties}
+      >
+        {/* Left: App Logo, Name and Info Tooltip */}
+        <div className="flex items-center gap-2">
+          <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse shrink-0" />
           <div className="flex items-center gap-1.5 relative group">
-            <span className="font-bold text-xs tracking-tight text-slate-200 uppercase tracking-widest">UniTunnel</span>
-            <div className="relative inline-flex items-center">
+            <span className="font-bold text-xs tracking-widest text-slate-200 uppercase">
+              UniTunnel
+            </span>
+            <div
+              className="relative inline-flex items-center"
+              style={{
+                ['--wails-draggable' as string]: 'no-drag',
+                WebkitAppRegion: 'no-drag',
+              } as React.CSSProperties}
+            >
               <button
                 type="button"
                 className="p-0.5 rounded-full text-slate-500 hover:text-cyan-400 transition"
@@ -308,7 +315,7 @@ export default function App() {
               </button>
 
               {/* Hover Popover Tooltip for App Info, Version & Developer */}
-              <div className="absolute left-1/2 -translate-x-1/2 top-full mt-2 w-64 p-3 bg-slate-900/95 backdrop-blur-md border border-cyan-800/60 rounded-xl shadow-2xl opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none group-hover:pointer-events-auto z-50 text-[11px] space-y-2 text-slate-300">
+              <div className="absolute left-0 top-full mt-2 w-64 p-3 bg-slate-900/95 backdrop-blur-md border border-cyan-800/60 rounded-xl shadow-2xl opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none group-hover:pointer-events-auto z-50 text-[11px] space-y-2 text-slate-300">
                 <div className="flex items-center justify-between border-b border-slate-800/80 pb-1.5 font-bold text-slate-100">
                   <span className="text-cyan-400 font-bold">UniTunnel Desktop</span>
                   <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-cyan-950 text-cyan-300 border border-cyan-800/60 font-semibold">
@@ -335,6 +342,48 @@ export default function App() {
               </div>
             </div>
           </div>
+        </div>
+
+        {/* Right: Custom Window Controls (Minimize & Close) */}
+        <div
+          className="flex items-center gap-1"
+          style={{
+            ['--wails-draggable' as string]: 'no-drag',
+            WebkitAppRegion: 'no-drag',
+          } as React.CSSProperties}
+        >
+          <button
+            type="button"
+            onClick={() => bridge.windowMinimize()}
+            className="p-1 rounded-md text-slate-400 hover:text-slate-100 hover:bg-slate-800/80 transition"
+            title="Minimizar a la barra de tareas"
+          >
+            <Minus className="w-3.5 h-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={() => bridge.windowHide()}
+            className="p-1 rounded-md text-slate-400 hover:text-red-300 hover:bg-red-950/60 transition"
+            title="Ocultar a la bandeja del sistema (System Tray)"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      </header>
+
+      {/* Unified Android App Container */}
+      <main className="flex-1 w-full max-w-md mx-auto flex flex-col p-4 justify-between overflow-y-auto [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
+        
+        {/* Top Action Bar: Settings & Logs */}
+        <div className="flex items-center justify-between py-2 border-b border-slate-900/80">
+          <button
+            onClick={() => openSettings('proxy')}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-200 border border-slate-800 transition text-xs font-semibold shadow-sm"
+            title="Ajustes"
+          >
+            <Settings className="w-3.5 h-3.5 text-cyan-400" />
+            <span>Ajustes</span>
+          </button>
 
           <button
             onClick={() => setLogsOpen(true)}

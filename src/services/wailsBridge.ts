@@ -457,6 +457,18 @@ class WailsBridge {
       };
     }
   }
+
+  public async windowMinimize(): Promise<void> {
+    if (isWailsRuntime()) {
+      return callWailsService<void>('WindowMinimize');
+    }
+  }
+
+  public async windowHide(): Promise<void> {
+    if (isWailsRuntime()) {
+      return callWailsService<void>('WindowHide');
+    }
+  }
 }
 
 export const bridge = new WailsBridge();

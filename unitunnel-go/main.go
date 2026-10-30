@@ -155,6 +155,7 @@ func main() {
 		MaxWidth:       380,
 		MaxHeight:      680,
 		DisableResize:  true,
+		Frameless:      true,
 		URL:            "/",
 		BackgroundType: application.BackgroundTypeSolid,
 		Windows: application.WindowsWindow{
@@ -196,13 +197,31 @@ func main() {
 
 	trayMenu := app.NewMenu()
 
-	statusItem := trayMenu.Add("UniTunnel: Desconectado")
+	// Header items: Connection status and Quota info
+	statusItem := trayMenu.Add("🔴 Estado: Desconectado")
 	statusItem.SetEnabled(false)
+
+	quotaTrayItem := trayMenu.Add("📊 Cuota UCI: Sin consultar")
+	quotaTrayItem.SetEnabled(false)
 
 	trayMenu.AddSeparator()
 
-	// Network Mode options
-	networkModeSubmenu := trayMenu.AddSubmenu("Modo de Red")
+	// Primary Action: Connect / Disconnect
+	connectItem := trayMenu.Add("⚡ Conectar al Túnel")
+	connectItem.OnClick(func(ctx *application.Context) {
+		go func() {
+			if appService.IsConnected() {
+				_ = appService.StopTunnel()
+			} else {
+				_ = appService.StartTunnel()
+			}
+		}()
+	})
+
+	trayMenu.AddSeparator()
+
+	// Submenu 1: Network Mode
+	networkModeSubmenu := trayMenu.AddSubmenu("🌐 Modo de Red")
 
 	var uciCableItem *application.MenuItem
 	var wifiMobileItem *application.MenuItem
@@ -218,9 +237,6 @@ func main() {
 
 	uciCableItem = networkModeSubmenu.AddRadio("Cable UCI (UniTunnel + Ethernet)", cfg.NetworkMode == string(network.ModeUCICable))
 	uciCableItem.OnClick(func(ctx *application.Context) {
-		// SetNetworkMode shells out to PowerShell/netsh (seconds). Never block the
-		// tray/UI event loop: run it off-thread and let the mode callback refresh
-		// the radio checks when it finishes.
 		go func() { _ = appService.SetNetworkMode(string(network.ModeUCICable)) }()
 	})
 
@@ -234,32 +250,31 @@ func main() {
 		go func() { _ = appService.SetNetworkMode(string(network.ModeDirect)) }()
 	})
 
-	trayMenu.AddSeparator()
+	// Submenu 2: Accounts Profile Switcher
+	accountsSubmenu := trayMenu.AddSubmenu("👤 Perfil de Cuenta")
 
-	connectItem := trayMenu.Add("Conectar")
-	connectItem.OnClick(func(ctx *application.Context) {
-		// StartTunnel performs an 8s pre-flight auth check plus the Wintun setup;
-		// StopTunnel restores routes/proxy. Both must stay off the event loop.
-		go func() {
-			if appService.IsConnected() {
-				_ = appService.StopTunnel()
-			} else {
-				_ = appService.StartTunnel()
+	updateAccountsSubmenu := func() {
+		accountsSubmenu.Clear()
+		accounts := appService.GetAccounts()
+		activeID := appService.GetActiveAccountID()
+		for _, acc := range accounts {
+			accID := acc.ID
+			accName := acc.Name
+			if accName == "" {
+				accName = acc.Username
 			}
-		}()
-	})
+			item := accountsSubmenu.AddRadio(fmt.Sprintf("%s (%s)", accName, acc.Username), accID == activeID)
+			item.OnClick(func(ctx *application.Context) {
+				go func() { _ = appService.SetActiveAccountID(accID) }()
+			})
+		}
+	}
+	updateAccountsSubmenu()
 
-	quotaItem := trayMenu.Add("Consultar Cuota UCI")
-	quotaItem.OnClick(func(ctx *application.Context) {
-		go func() {
-			info, err := appService.CheckQuota()
-			if err == nil && info != nil {
-				tray.SetLabel(fmt.Sprintf("UniTunnel (%.1f MB)", info.RemainingMB))
-			}
-		}()
-	})
+	// Submenu 3: Quick Tools
+	toolsSubmenu := trayMenu.AddSubmenu("🛠️ Herramientas Rápidas")
 
-	hotspotItem := trayMenu.AddCheckbox("Punto de Acceso / Zona Wi-Fi", appService.IsHotspotForced())
+	hotspotItem := toolsSubmenu.AddCheckbox("📶 Punto de Acceso / Zona Wi-Fi (SoftAP)", appService.IsHotspotForced())
 	hotspotItem.OnClick(func(ctx *application.Context) {
 		go func() {
 			current := appService.IsHotspotForced()
@@ -268,9 +283,24 @@ func main() {
 		}()
 	})
 
+	toolsSubmenu.Add("🔍 Consultar Cuota UCI Ahora").OnClick(func(ctx *application.Context) {
+		go func() {
+			info, err := appService.CheckQuota()
+			if err == nil && info != nil {
+				if info.IsOverdraft {
+					quotaTrayItem.SetLabel(fmt.Sprintf("📊 Cuota UCI: +%.1f MB Sobregiro", info.OverdraftMB))
+					tray.SetLabel(fmt.Sprintf("UniTunnel (+%.1f MB)", info.OverdraftMB))
+				} else {
+					quotaTrayItem.SetLabel(fmt.Sprintf("📊 Cuota UCI: %.1f MB restante / %.0f MB", info.RemainingMB, info.AllocatedMB))
+					tray.SetLabel(fmt.Sprintf("UniTunnel (%.1f MB)", info.RemainingMB))
+				}
+			}
+		}()
+	})
+
 	trayMenu.AddSeparator()
 
-	alwaysOnTopItem := trayMenu.AddCheckbox("Fijar al frente (Siempre visible)", cfg.AlwaysOnTop)
+	alwaysOnTopItem := trayMenu.AddCheckbox("📌 Fijar al frente (Siempre visible)", cfg.AlwaysOnTop)
 	alwaysOnTopItem.OnClick(func(ctx *application.Context) {
 		newVal := !appService.IsAlwaysOnTop()
 		_ = appService.SetAlwaysOnTop(newVal)
@@ -278,12 +308,12 @@ func main() {
 
 	trayMenu.AddSeparator()
 
-	trayMenu.Add("Mostrar Ventana").OnClick(func(ctx *application.Context) {
+	trayMenu.Add("🔲 Mostrar Ventana").OnClick(func(ctx *application.Context) {
 		win.Show()
 		win.Focus()
 	})
 
-	trayMenu.Add("Salir").OnClick(func(ctx *application.Context) {
+	trayMenu.Add("❌ Salir").OnClick(func(ctx *application.Context) {
 		log.Println("[DEBUG] Exit clicked from System Tray -> Stopping tunnel and quitting application.")
 		if appService.IsConnected() {
 			_ = appService.StopTunnel()
@@ -305,12 +335,12 @@ func main() {
 	appService.SetCallbacks(
 		func(connected bool, status string) {
 			if connected {
-				statusItem.SetLabel("UniTunnel: Conectado")
-				connectItem.SetLabel("Desconectar")
+				statusItem.SetLabel("🟢 Estado: Conectado")
+				connectItem.SetLabel("🔌 Desconectar del Túnel")
 				tray.SetLabel("UniTunnel: Conectado")
 			} else {
-				statusItem.SetLabel(fmt.Sprintf("UniTunnel: %s", status))
-				connectItem.SetLabel("Conectar")
+				statusItem.SetLabel(fmt.Sprintf("🔴 Estado: %s", status))
+				connectItem.SetLabel("⚡ Conectar al Túnel")
 				tray.SetLabel("UniTunnel: Desconectado")
 			}
 		},
@@ -322,6 +352,31 @@ func main() {
 			if alwaysOnTopItem != nil {
 				alwaysOnTopItem.SetChecked(pinned)
 			}
+		},
+		func(info *quota.QuotaInfo) {
+			if info != nil && info.Success {
+				if info.IsOverdraft {
+					quotaTrayItem.SetLabel(fmt.Sprintf("📊 Cuota UCI: +%.1f MB Sobregiro", info.OverdraftMB))
+					tray.SetLabel(fmt.Sprintf("UniTunnel (+%.1f MB)", info.OverdraftMB))
+				} else {
+					quotaTrayItem.SetLabel(fmt.Sprintf("📊 Cuota UCI: %.1f MB restante / %.0f MB", info.RemainingMB, info.AllocatedMB))
+					tray.SetLabel(fmt.Sprintf("UniTunnel (%.1f MB)", info.RemainingMB))
+				}
+			} else if info != nil {
+				quotaTrayItem.SetLabel(fmt.Sprintf("📊 Cuota UCI: %s", info.ErrorMessage))
+			}
+		},
+		func(activeID string) {
+			updateAccountsSubmenu()
+		},
+	)
+
+	appService.SetWindowCallbacks(
+		func() {
+			win.Minimise()
+		},
+		func() {
+			win.Hide()
 		},
 	)
 
