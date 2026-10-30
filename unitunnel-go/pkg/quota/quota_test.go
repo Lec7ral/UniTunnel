@@ -111,5 +111,8 @@ func TestParseUCIResponse(t *testing.T) {
 		if info.StatusLevel != "overdraft" {
 			t.Errorf("StatusLevel = %s, want overdraft", info.StatusLevel)
 		}
+		if info.RawResponse != raw {
+			t.Errorf("RawResponse = %q, want %q", info.RawResponse, raw)
+		}
 	})
 }

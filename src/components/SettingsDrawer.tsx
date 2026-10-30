@@ -22,9 +22,11 @@ import {
   RefreshCw,
   Info,
   Tag,
+  Code,
 } from 'lucide-react';
 import { AppConfig, UserAccount, defaultConfig, bridge } from '../services/wailsBridge';
 import { reconnectReasons } from '../services/configDiff';
+import { QuotaInspectorModal } from './QuotaInspectorModal';
 
 interface SettingsDrawerProps {
   isOpen: boolean;
@@ -48,6 +50,7 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
   const [saveError, setSaveError] = useState<string | null>(null);
   const [showPasswordMap, setShowPasswordMap] = useState<Record<string, boolean>>({});
   const [newBypassInput, setNewBypassInput] = useState('');
+  const [showInspector, setShowInspector] = useState(false);
 
   // Hotspot offline bypass & Wi-Fi Direct states
   const [forceHotspotActive, setForceHotspotActive] = useState(false);
@@ -371,6 +374,21 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
                     />
                   </div>
                 )}
+
+                <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between">
+                  <div>
+                    <span className="text-slate-200 font-medium block">Diagnóstico de Respuesta RAW</span>
+                    <span className="text-[11px] text-slate-400">Prueba credenciales y visualiza la respuesta devuelta por el portal</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowInspector(true)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-cyan-300 font-medium transition text-xs border border-slate-700"
+                  >
+                    <Code className="w-3.5 h-3.5" />
+                    <span>Inspector RAW</span>
+                  </button>
+                </div>
               </div>
 
               <div className="p-3.5 rounded-xl bg-slate-950/60 border border-slate-800 space-y-3">
@@ -888,6 +906,13 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
           </div>
         </div>
       </div>
+
+      <QuotaInspectorModal
+        isOpen={showInspector}
+        onClose={() => setShowInspector(false)}
+        activeAccount={cfg.accounts.find((a) => a.id === cfg.active_account_id) || cfg.accounts[0]}
+        defaultPortalUrl={cfg.quota_url}
+      />
     </div>
   );
 };

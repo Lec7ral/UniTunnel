@@ -10,6 +10,7 @@ import {
   User,
   ChevronDown,
   Check,
+  Code,
 } from 'lucide-react';
 import {
   bridge,
@@ -20,6 +21,7 @@ import {
 } from './services/wailsBridge';
 import { SettingsDrawer } from './components/SettingsDrawer';
 import { LogsDrawer } from './components/LogsDrawer';
+import { QuotaInspectorModal } from './components/QuotaInspectorModal';
 import { reconnectReasons, reconnectWarning } from './services/configDiff';
 
 function formatSpeed(mbPerSec: number): string {
@@ -66,6 +68,7 @@ export default function App() {
     success: false,
   });
   const [quotaLoading, setQuotaLoading] = useState(false);
+  const [quotaInspectorOpen, setQuotaInspectorOpen] = useState(false);
 
   // Mode switching feedback toast
   const [modeNotice, setModeNotice] = useState<string | null>(null);
@@ -496,6 +499,13 @@ export default function App() {
                 >
                   <RefreshCw className={`w-3 h-3 ${quotaLoading ? 'animate-spin' : ''}`} />
                 </button>
+                <button
+                  onClick={() => setQuotaInspectorOpen(true)}
+                  className="p-1 rounded hover:bg-slate-950 text-slate-400 hover:text-cyan-300 transition"
+                  title="Inspector de Cuota RAW (Diagnóstico y prueba manual)"
+                >
+                  <Code className="w-3 h-3 text-cyan-400" />
+                </button>
               </div>
               <div className="font-mono text-[11px]">
                 {quota.allocated_mb === 0 ? (
@@ -605,6 +615,13 @@ export default function App() {
             setBackendError(err instanceof Error ? err.message : String(err));
           });
         }}
+      />
+
+      <QuotaInspectorModal
+        isOpen={quotaInspectorOpen}
+        onClose={() => setQuotaInspectorOpen(false)}
+        activeAccount={activeAccount}
+        defaultPortalUrl={config.quota_url}
       />
     </div>
   );

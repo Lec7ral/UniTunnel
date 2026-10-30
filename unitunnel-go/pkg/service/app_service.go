@@ -485,7 +485,43 @@ func (s *AppService) CheckQuota() (*quota.QuotaInfo, error) {
 	} else {
 		s.AddLog("CUOTA", fmt.Sprintf("Aviso cuota: %s", info.ErrorMessage))
 	}
+
+	if info.RawResponse != "" {
+		s.AddLog("CUOTA-RAW", fmt.Sprintf("Respuesta servidor (%d bytes): %s", len(info.RawResponse), info.RawResponse))
+	}
 	return info, nil
+}
+
+// InspectQuota queries cuota.uci.cu with custom or pre-filled credentials and returns
+// complete raw and parsed payload for diagnostic and debugging purposes.
+func (s *AppService) InspectQuota(portalURL, username, password string) (*quota.QuotaInspectionResult, error) {
+	s.mu.Lock()
+	cfg := s.cfg
+	s.mu.Unlock()
+
+	if portalURL == "" && cfg != nil {
+		portalURL = cfg.QuotaURL
+	}
+	if portalURL == "" {
+		portalURL = "https://cuota.uci.cu/"
+	}
+
+	var proxyURL *url.URL
+	if s.IsConnected() && cfg != nil {
+		proxyURL, _ = url.Parse(fmt.Sprintf("http://127.0.0.1:%d", cfg.LocalHTTPPort))
+	}
+
+	s.AddLog("CUOTA-INSPECT", fmt.Sprintf("Iniciando inspección en %s para usuario '%s'...", portalURL, username))
+	result, err := quota.InspectUCIQuota(portalURL, username, password, proxyURL)
+	if err != nil {
+		s.AddLog("CUOTA-INSPECT", fmt.Sprintf("Error en inspección: %v", err))
+		return nil, err
+	}
+
+	if result.RawResponse != "" {
+		s.AddLog("CUOTA-INSPECT", fmt.Sprintf("HTTP %d (%d bytes recibidos)", result.StatusCode, len(result.RawResponse)))
+	}
+	return result, nil
 }
 
 // GetLogs returns stored logs

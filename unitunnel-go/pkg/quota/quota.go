@@ -27,8 +27,24 @@ type QuotaInfo struct {
 	StatusLevel    string    `json:"status_level"`    // "normal", "warning", "critical", "exhausted", "overdraft"
 	LastUpdated    time.Time `json:"last_updated"`
 	RawSnippet     string    `json:"raw_snippet"`
+	RawResponse    string    `json:"raw_response"`
 	Success        bool      `json:"success"`
 	ErrorMessage   string    `json:"error_message,omitempty"`
+}
+
+// QuotaInspectionResult contains the raw protocol and debugging details for diagnostic inspection.
+type QuotaInspectionResult struct {
+	URL          string            `json:"url"`
+	StatusCode   int               `json:"status_code"`
+	StatusText   string            `json:"status_text"`
+	RawResponse  string            `json:"raw_response"`
+	FixedJSON    string            `json:"fixed_json"`
+	ParseError   string            `json:"parse_error,omitempty"`
+	QuotaInfo    *QuotaInfo        `json:"quota_info"`
+	Headers      map[string]string `json:"headers"`
+	Timestamp    string            `json:"timestamp"`
+	Success      bool              `json:"success"`
+	ErrorMessage string            `json:"error_message,omitempty"`
 }
 
 // Regex patterns to parse cuota.uci.cu variations in HTML / JSON.
@@ -189,6 +205,7 @@ func parseUCIResponse(rawBody, username string) *QuotaInfo {
 	info := &QuotaInfo{
 		Username:    username,
 		LastUpdated: time.Now(),
+		RawResponse: rawBody,
 		Success:     false,
 	}
 
@@ -467,4 +484,88 @@ func (q *QuotaInfo) FormatQuotaStatus() string {
 		return fmt.Sprintf("Sobregiro: +%.1f MB (%.1f MB / %.1f MB · %.0f%% consumido - Permitido)", q.OverdraftMB, q.UsedMB, q.AllocatedMB, q.PercentUsed)
 	}
 	return fmt.Sprintf("Restante: %.1f MB / %.1f MB (%.0f%% usado)", q.RemainingMB, q.AllocatedMB, q.PercentUsed)
+}
+
+// InspectUCIQuota performs a diagnostic HTTP request to cuota.uci.cu, capturing full
+// protocol details (HTTP status, headers, raw response, normalized JSON, and parsed fields).
+func InspectUCIQuota(portalURL, username, password string, proxyURL *url.URL) (*QuotaInspectionResult, error) {
+	targetURL := resolveQuotaEndpoint(portalURL)
+	result := &QuotaInspectionResult{
+		URL:       targetURL,
+		Timestamp: time.Now().Format("2006-01-02 15:04:05"),
+		Headers:   make(map[string]string),
+	}
+
+	transport := &http.Transport{
+		TLSClientConfig: &tls.Config{
+			MinVersion:         tls.VersionTLS12,
+			InsecureSkipVerify: true,
+		},
+		ResponseHeaderTimeout: 12 * time.Second,
+		TLSHandshakeTimeout:   6 * time.Second,
+	}
+	if proxyURL != nil {
+		transport.Proxy = http.ProxyURL(proxyURL)
+	}
+
+	client := &http.Client{
+		Transport: transport,
+		Timeout:   15 * time.Second,
+	}
+
+	base64Pass := base64.StdEncoding.EncodeToString([]byte(password))
+	formData := url.Values{}
+	formData.Set("username", username)
+	formData.Set("userpassword", base64Pass)
+
+	req, err := http.NewRequest("POST", targetURL, strings.NewReader(formData.Encode()))
+	if err != nil {
+		result.ErrorMessage = fmt.Sprintf("Error creando petición: %v", err)
+		return result, nil
+	}
+
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("User-Agent", "UniTunnel/2.4 (UCI-Inspector)")
+	req.Header.Set("Accept", "*/*")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		result.ErrorMessage = fmt.Sprintf("Error al contactar con %s: %v", targetURL, err)
+		return result, nil
+	}
+	defer resp.Body.Close()
+
+	result.StatusCode = resp.StatusCode
+	result.StatusText = resp.Status
+	for k, v := range resp.Header {
+		if len(v) > 0 {
+			result.Headers[k] = strings.Join(v, ", ")
+		}
+	}
+
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
+	if err != nil {
+		result.ErrorMessage = fmt.Sprintf("Error leyendo cuerpo de respuesta: %v", err)
+		return result, nil
+	}
+
+	rawBody := string(bodyBytes)
+	result.RawResponse = rawBody
+	fixed := fixToJSONString(rawBody)
+	result.FixedJSON = fixed
+
+	var testObj any
+	if jErr := json.Unmarshal([]byte(fixed), &testObj); jErr != nil {
+		result.ParseError = jErr.Error()
+	}
+
+	info := parseUCIResponse(rawBody, username)
+	info.RawResponse = rawBody
+	result.QuotaInfo = info
+	result.Success = info.Success
+	if !result.Success && result.ErrorMessage == "" {
+		result.ErrorMessage = info.ErrorMessage
+	}
+
+	return result, nil
 }

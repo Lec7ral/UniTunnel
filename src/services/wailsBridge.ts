@@ -59,6 +59,21 @@ export interface QuotaInfo {
   overdraft_mb: number;
   status_level: 'normal' | 'warning' | 'critical' | 'exhausted' | 'overdraft';
   last_updated: string;
+  raw_response?: string;
+  success: boolean;
+  error_message?: string;
+}
+
+export interface QuotaInspectionResult {
+  url: string;
+  status_code: number;
+  status_text?: string;
+  raw_response: string;
+  fixed_json?: string;
+  parse_error?: string;
+  quota_info?: QuotaInfo;
+  headers?: Record<string, string>;
+  timestamp: string;
   success: boolean;
   error_message?: string;
 }
@@ -376,6 +391,70 @@ class WailsBridge {
 
   public async isHotspotForced(): Promise<boolean> {
     return callWailsService<boolean>('IsHotspotForced');
+  }
+
+  /**
+   * Diagnostic method to inspect raw response from cuota.uci.cu.
+   * If running in Wails desktop app, queries directly via Go backend.
+   * If running in browser, tries /api/inspect-quota or direct fetch.
+   */
+  public async inspectQuota(
+    portalUrl: string,
+    username: string,
+    password: string,
+  ): Promise<QuotaInspectionResult> {
+    if (isWailsRuntime()) {
+      try {
+        const res = await callWailsService<QuotaInspectionResult>(
+          'InspectQuota',
+          portalUrl,
+          username,
+          password,
+        );
+        if (res) {
+          await this.fetchLogs();
+          return res;
+        }
+      } catch (err) {
+        return {
+          url: portalUrl,
+          status_code: 0,
+          raw_response: '',
+          timestamp: new Date().toLocaleTimeString(),
+          success: false,
+          error_message: errorMessage(err),
+        };
+      }
+    }
+
+    try {
+      const response = await fetch('/api/inspect-quota', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ portal_url: portalUrl, username, password }),
+      });
+      if (response.ok) {
+        return (await response.json()) as QuotaInspectionResult;
+      }
+      const errText = await response.text();
+      return {
+        url: portalUrl,
+        status_code: response.status,
+        raw_response: errText,
+        timestamp: new Date().toLocaleTimeString(),
+        success: false,
+        error_message: `HTTP ${response.status}: ${errText}`,
+      };
+    } catch (fetchErr) {
+      return {
+        url: portalUrl,
+        status_code: 0,
+        raw_response: '',
+        timestamp: new Date().toLocaleTimeString(),
+        success: false,
+        error_message: errorMessage(fetchErr),
+      };
+    }
   }
 }
 
