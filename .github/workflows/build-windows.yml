@@ -145,25 +145,12 @@ jobs:
             Copy-Item -Path "unitunnel-go\config.example.json" -Destination "dist-release\config.json" -Force
           }
 
-          # Copy icon if available
-          if (Test-Path "unitunnel-go\icon.ico") {
-            Copy-Item -Path "unitunnel-go\icon.ico" -Destination "dist-release\icon.ico" -Force
-          }
-
-          # Create UAC requireAdministrator manifest
-          @"
-          <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-          <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
-            <assemblyIdentity version="1.0.0.0" processorArchitecture="*" name="UniTunnel" type="win32"/>
-            <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
-              <security>
-                <requestedPrivileges>
-                  <requestedExecutionLevel level="requireAdministrator" uiAccess="false"/>
-                </requestedPrivileges>
-              </security>
-            </trustInfo>
-          </assembly>
-          "@ | Out-File -FilePath "dist-release\unitunnel.exe.manifest" -Encoding utf8
+          # NOTE: unitunnel.exe.manifest and unitunnel.exe/icon.ico are NOT copied
+          # here anymore. The executable embeds both resources itself (via the
+          # committed unitunnel.rc + rsrc_windows_amd64.syso, and unitunnel-go/
+          # assets/ fed to the Wails options) and Windows prefers the external
+          # manifest over the embedded one, so an external copy would only be
+          # able to override the embedded requireAdministrator manifest.
 
           # Create Spanish instruction manual
           @"

@@ -13,6 +13,7 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
 
+	"unitunnel/assets"
 	"unitunnel/pkg/autostart"
 	"unitunnel/pkg/config"
 	"unitunnel/pkg/elevation"
@@ -129,6 +130,12 @@ func main() {
 	app := application.New(application.Options{
 		Name:        "UniTunnel",
 		Description: "UniTunnel - Acceso Universitario para Windows",
+		// Wails only falls back to this icon when the executable has no icon
+		// resource with ID 3, which is exactly our case: unitunnel.rc declares
+		// the icon group as ID 100. Without it the window is created with the
+		// generic IDI_APPLICATION icon, so the title bar and the Alt-Tab entry
+		// show the Windows default icon instead of ours.
+		Icon: assets.IconPNG,
 		Services: []application.Service{
 			application.NewService(appService),
 		},
@@ -185,6 +192,7 @@ func main() {
 	log.Println("[DEBUG] Step 8: Configuring Windows System Tray (native embedded executable icon)...")
 	tray := app.NewSystemTray()
 	tray.SetLabel("UniTunnel")
+	tray.SetIcon(assets.IconPNG)
 
 	trayMenu := app.NewMenu()
 
