@@ -69,7 +69,7 @@ La app **no funciona hoy**: el frontend nunca invoca al backend, el toggle de ho
 
 | ID | Estado | Detalle |
 |---|---|---|
-| **F5.1** | ✅ | Código muerto eliminado tras verificarlo con búsqueda recursiva en todo el módulo: `pkg/tunnel/engine.go` (un segundo `NewEngine` que nadie llamaba y que se confundía con `tun.NewEngine`), `pkg/tunnel/audit.go` (`RunProxyAudit` inalcanzable), `pkg/tun/prober.go` (`CheckInternetFlow`/`StartPeriodicPing`), `traffic.StartSpeedMonitor` y la variable `currentSpeedMBs`. `pkg/auth/detector.go` se redujo a `pkg/auth/types.go` (solo `AuthType` + constantes, que sí se usan); las sondas `ProbeProxy*` no se llamaban desde ningún sitio. `sni.go` se conserva: lo usa `socks5.go`. |
+| **F5.1** | ✅ | Código muerto eliminado tras verificarlo con búsqueda recursiva en todo el módulo: `pkg/tunnel/engine.go` (un segundo `NewEngine` que nadie llamaba y que se confundía con `tun.NewEngine`), `pkg/tunnel/audit.go` (`RunProxyAudit` inalcanzable), `pkg/tun/prober.go` (`CheckInternetFlow`/`StartPeriodicPing`), `traffic.StartSpeedMonitor` y la variable `currentSpeedMBs`. `pkg/auth/detector.go` se redujo a `pkg/auth/types.go` (solo `AuthType` + constantes, que sí se usan); las sondas `ProbeProxy*` no se llamaban desde ningún sitio. `sni.go` se conserva: lo usa `socks5.go`. `pkg/tun/diagnostics_other.go` se borra (stub no-Windows con acentos corruptos; la implementación real vive en `diagnostics_windows.go`). |
 | **F5.2** | ✅ | Un solo `wails.json`, en la raíz, con `frontend.dir: unitunnel-go/dist` (el directorio que incrusta `//go:embed all:dist`). Eliminado `unitunnel-go/wails.json`, que apuntaba a `../dist`. |
 | **F5.3** | ✅ | README raíz reescrito (era el boilerplate de AI Studio, con `GEMINI_API_KEY` y enlaces a ai.studio) y `unitunnel-go/README.md` reescrito: sin Fyne ni Android, con arquitectura, flujo de conexión, modos, tabla de `config.json`, reversibilidad y resolución de problemas. `index.html` ya no se llama “NTLM Diagnostic Hub”. `metadata.json` (metadatos de AI Studio con la capability de Gemini) eliminado. `config.example.json` ya no lleva `vps_enabled`/`vps_server`/`vps_secret`. |
 | **F5.4** | 🟡 | `metadata.json` eliminado y `public/` desaparece con él. `.aistudio/**` y `public/assets/aistudio/**` ya figuran como borrados en el índice (no los borré yo; los dejé como estaban). ⏳ Pendiente: decidir `bun.lock` vs `package-lock.json`. El CI usa `npm ci`, pero el lockfile npm está desincronizado y no se puede regenerar en este entorno. |
@@ -94,7 +94,7 @@ La app **no funciona hoy**: el frontend nunca invoca al backend, el toggle de ho
 - **F5.4**: decidir si se queda `bun.lock` o `package-lock.json` (hoy conviven).
 - **F5.5 (resto)**: tests de parseo de cuota, vectores MS-NLMP y `CountingPipe` con `-race`.
 - Validación manual en red UCI real (todo el bloque de pruebas de la Fase 5).
-- Borrar `unitunnel-go/pkg/tun/diagnostics_other.go` (stub no-Windows con acentos corruptos; el plan ya lo marcaba como a borrar).
+- ~~Borrar `unitunnel-go/pkg/tun/diagnostics_other.go`~~ ✅ Hecho: stub no-Windows eliminado (las firmas viven en `diagnostics_windows.go`; el proyecto es Windows-only).
 - Confirmar que Wails v3 marshalea `SetLabel`/`SetChecked` de la bandeja al hilo de UI (F3.3).
 
 ### Nota sobre ficheros de build
