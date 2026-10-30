@@ -49,7 +49,7 @@ func Acquire(mutexName, windowTitle string) (lock *Lock, ok bool) {
 	}
 
 	if lastErr == syscall.Errno(errorAlreadyExists) {
-		_, _ = procCloseHandle.Call(h)
+		_, _, _ = procCloseHandle.Call(h)
 		focusExistingWindow(windowTitle)
 		return nil, false
 	}
@@ -61,7 +61,7 @@ func Acquire(mutexName, windowTitle string) (lock *Lock, ok bool) {
 // handle is closed.
 func (l *Lock) Release() {
 	if l != nil && l.handle != 0 {
-		_, _ = procCloseHandle.Call(uintptr(l.handle))
+		_, _, _ = procCloseHandle.Call(uintptr(l.handle))
 		l.handle = 0
 	}
 }
