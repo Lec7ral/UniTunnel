@@ -169,13 +169,13 @@ func (s *AppService) SaveConfig(newCfg *config.Config) error {
 }
 
 // GetAccounts returns the current accounts list
-func (s *AppService) GetAccounts() []config.Account {
+func (s *AppService) GetAccounts() []config.UserAccount {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.cfg == nil {
 		return nil
 	}
-	copied := make([]config.Account, len(s.cfg.Accounts))
+	copied := make([]config.UserAccount, len(s.cfg.Accounts))
 	copy(copied, s.cfg.Accounts)
 	return copied
 }
