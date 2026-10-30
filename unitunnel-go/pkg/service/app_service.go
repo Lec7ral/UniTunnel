@@ -62,7 +62,6 @@ type AppService struct {
 	onNetworkModeChange func(mode string)
 	onAlwaysOnTopChange func(pinned bool)
 	onQuotaChange       func(info *quota.QuotaInfo)
-	onAccountChange     func(activeID string)
 	onWindowMinimize    func()
 	onWindowHide        func()
 }
@@ -83,13 +82,11 @@ func (s *AppService) SetCallbacks(
 	onMode func(string),
 	onAlwaysOnTop func(bool),
 	onQuota func(info *quota.QuotaInfo),
-	onAccount func(activeID string),
 ) {
 	s.onStatusChange = onStatus
 	s.onNetworkModeChange = onMode
 	s.onAlwaysOnTopChange = onAlwaysOnTop
 	s.onQuotaChange = onQuota
-	s.onAccountChange = onAccount
 }
 
 func (s *AppService) SetWindowCallbacks(onMinimize func(), onHide func()) {
@@ -162,9 +159,6 @@ func (s *AppService) SaveConfig(newCfg *config.Config) error {
 	s.mu.Unlock()
 
 	s.AddLog("CONFIG", "Configuración actualizada y guardada correctamente en config.json")
-	if s.onAccountChange != nil {
-		s.onAccountChange(newCfg.ActiveAccountID)
-	}
 	return nil
 }
 
@@ -205,13 +199,9 @@ func (s *AppService) SetActiveAccountID(id string) error {
 				accName = s.cfg.Accounts[i].Username
 			}
 			_ = config.SaveConfig(s.cfg)
-			cbAccount := s.onAccountChange
 			s.mu.Unlock()
 
 			s.AddLog("CUENTA", fmt.Sprintf("Perfil de cuenta cambiado a: '%s'", accName))
-			if cbAccount != nil {
-				cbAccount(id)
-			}
 			return nil
 		}
 	}

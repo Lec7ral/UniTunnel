@@ -22,6 +22,7 @@ import (
 	"unitunnel/pkg/service"
 	"unitunnel/pkg/singleinstance"
 	"unitunnel/pkg/tun"
+	"unitunnel/pkg/quota"
 )
 
 //go:embed all:dist
@@ -252,24 +253,17 @@ func main() {
 
 	// Submenu 2: Accounts Profile Switcher
 	accountsSubmenu := trayMenu.AddSubmenu("👤 Perfil de Cuenta")
-
-	updateAccountsSubmenu := func() {
-		accountsSubmenu.Clear()
-		accounts := appService.GetAccounts()
-		activeID := appService.GetActiveAccountID()
-		for _, acc := range accounts {
-			accID := acc.ID
-			accName := acc.Name
-			if accName == "" {
-				accName = acc.Username
-			}
-			item := accountsSubmenu.AddRadio(fmt.Sprintf("%s (%s)", accName, acc.Username), accID == activeID)
-			item.OnClick(func(ctx *application.Context) {
-				go func() { _ = appService.SetActiveAccountID(accID) }()
-			})
+	for _, acc := range cfg.Accounts {
+		accID := acc.ID
+		accName := acc.Name
+		if accName == "" {
+			accName = acc.Username
 		}
+		item := accountsSubmenu.AddRadio(fmt.Sprintf("%s (%s)", accName, acc.Username), accID == cfg.ActiveAccountID)
+		item.OnClick(func(ctx *application.Context) {
+			go func() { _ = appService.SetActiveAccountID(accID) }()
+		})
 	}
-	updateAccountsSubmenu()
 
 	// Submenu 3: Quick Tools
 	toolsSubmenu := trayMenu.AddSubmenu("🛠️ Herramientas Rápidas")
@@ -365,9 +359,6 @@ func main() {
 			} else if info != nil {
 				quotaTrayItem.SetLabel(fmt.Sprintf("📊 Cuota UCI: %s", info.ErrorMessage))
 			}
-		},
-		func(activeID string) {
-			updateAccountsSubmenu()
 		},
 	)
 
