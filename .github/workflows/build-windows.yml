@@ -188,3 +188,14 @@ jobs:
           name: unitunnel-windows-wails3-x64
           path: dist-release/
           retention-days: 30
+
+      - name: Build Professional Installer (Inno Setup)
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" unitunnel-go\unitunnel.iss
+
+      - name: Upload Installer Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: UniTunnel-Setup-x64
+          path: dist-installer/UniTunnel-Setup-v2.4.0.exe
+          retention-days: 30
