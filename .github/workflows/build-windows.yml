@@ -31,7 +31,14 @@ jobs:
           cache: 'npm'
 
       - name: Install Frontend Dependencies
-        run: npm ci
+        run: |
+          # `--package-lock-only` regenerates package-lock.json from package.json
+          # when it is out of sync (the workflow runner has open internet, so npm
+          # can reach the registry). Then `npm ci` installs reproducibly from the
+          # now-updated lockfile. bun.lock was dropped (F5.4: package-lock.json is
+          # the single source of truth).
+          npm install --package-lock-only
+          npm ci
 
       # Non-blocking on purpose: `vite build` does not type-check, so a type
       # error must not prevent producing a working .exe on the first run. Make

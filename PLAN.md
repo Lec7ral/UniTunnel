@@ -91,7 +91,7 @@ La app **no funciona hoy**: el frontend nunca invoca al backend, el toggle de ho
 - **F0.1**: generar `go.sum` con `go mod tidy` en una máquina con red y commitearlo. Es lo único que bloquea compilar, `go vet` y ejecutar los tests nuevos.
 - **`package-lock.json`**: ejecutar `npm install` y commitear el lockfile (el CI usa `npm ci`).
 - **F2.5 (resto)**: cifrado DPAPI de las contraseñas de `config.json`.
-- ~~**F5.4**: decidir si se queda `bun.lock` o `package-lock.json`.~~ ✅ Resuelto: se adoptó **`package-lock.json`** (el más estándar) y se borró `bun.lock`; el workflow ahora instala con `npm ci` sin fallback.
+- ~~**F5.4**: decidir si se queda `bun.lock` o `package-lock.json`.~~ ✅ Resuelto: se adoptó **`package-lock.json`** (el más estándar) y se borró `bun.lock`; el workflow regenera el lockfile con `npm install --package-lock-only` y luego instala con `npm ci`.
 - **F5.5 (resto)**: tests de parseo de cuota, vectores MS-NLMP y `CountingPipe` con `-race`.
 - Validación manual en red UCI real (todo el bloque de pruebas de la Fase 5).
 - ~~Borrar `unitunnel-go/pkg/tun/diagnostics_other.go`~~ ✅ Hecho: stub no-Windows eliminado (las firmas viven en `diagnostics_windows.go`; el proyecto es Windows-only).
