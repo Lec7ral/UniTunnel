@@ -202,51 +202,70 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
           </button>
         </div>
 
-        {/* Tab Navigation */}
-        <div className="flex border-b border-slate-800 bg-slate-950/50 px-3 pt-2 gap-1 overflow-x-auto [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
+        {/* Tab Navigation: Compact 4-column grid with icon above and label below to prevent overflow */}
+        <div className="grid grid-cols-4 gap-1 p-1 sm:p-1.5 border-b border-slate-800 bg-slate-950/70 select-none">
           <button
+            type="button"
             onClick={() => setActiveTab('proxy')}
-            className={`px-3 py-2 text-xs font-medium rounded-t-lg transition flex items-center gap-1.5 whitespace-nowrap border-b-2 ${
+            title="Proxy & Cuota"
+            className={`flex flex-col items-center justify-center py-2 px-1 rounded-lg transition-all min-w-0 ${
               activeTab === 'proxy'
-                ? 'border-cyan-500 text-cyan-400 bg-slate-900'
-                : 'border-transparent text-slate-400 hover:text-slate-200'
+                ? 'bg-slate-900 text-cyan-400 font-semibold border border-cyan-500/40 shadow-sm'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900/40 border border-transparent'
             }`}
           >
-            <Server className="w-3.5 h-3.5" />
-            Proxy &amp; Cuota
+            <Server className="w-4 h-4 mb-1 shrink-0" />
+            <span className="text-[10px] sm:text-[11px] leading-tight truncate w-full text-center">
+              Proxy
+            </span>
           </button>
+
           <button
+            type="button"
             onClick={() => setActiveTab('accounts')}
-            className={`px-3 py-2 text-xs font-medium rounded-t-lg transition flex items-center gap-1.5 whitespace-nowrap border-b-2 ${
+            title={`Cuentas (${cfg.accounts.length})`}
+            className={`flex flex-col items-center justify-center py-2 px-1 rounded-lg transition-all min-w-0 ${
               activeTab === 'accounts'
-                ? 'border-cyan-500 text-cyan-400 bg-slate-900'
-                : 'border-transparent text-slate-400 hover:text-slate-200'
+                ? 'bg-slate-900 text-cyan-400 font-semibold border border-cyan-500/40 shadow-sm'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900/40 border border-transparent'
             }`}
           >
-            <Users className="w-3.5 h-3.5" />
-            Cuentas ({cfg.accounts.length})
+            <Users className="w-4 h-4 mb-1 shrink-0" />
+            <span className="text-[10px] sm:text-[11px] leading-tight truncate w-full text-center">
+              Cuentas ({cfg.accounts.length})
+            </span>
           </button>
+
           <button
+            type="button"
             onClick={() => setActiveTab('network')}
-            className={`px-3 py-2 text-xs font-medium rounded-t-lg transition flex items-center gap-1.5 whitespace-nowrap border-b-2 ${
+            title="Wintun / L3"
+            className={`flex flex-col items-center justify-center py-2 px-1 rounded-lg transition-all min-w-0 ${
               activeTab === 'network'
-                ? 'border-cyan-500 text-cyan-400 bg-slate-900'
-                : 'border-transparent text-slate-400 hover:text-slate-200'
+                ? 'bg-slate-900 text-cyan-400 font-semibold border border-cyan-500/40 shadow-sm'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900/40 border border-transparent'
             }`}
           >
-            <Shield className="w-3.5 h-3.5" />
-            Wintun / L3
+            <Shield className="w-4 h-4 mb-1 shrink-0" />
+            <span className="text-[10px] sm:text-[11px] leading-tight truncate w-full text-center">
+              Wintun / L3
+            </span>
           </button>
+
           <button
+            type="button"
             onClick={() => setActiveTab('system')}
-            className={`px-3 py-2 text-xs font-medium rounded-t-lg transition flex items-center gap-1.5 whitespace-nowrap border-b-2 ${
+            title="Windows & Hotspot"
+            className={`flex flex-col items-center justify-center py-2 px-1 rounded-lg transition-all min-w-0 ${
               activeTab === 'system'
-                ? 'border-cyan-500 text-cyan-400 bg-slate-900'
-                : 'border-transparent text-slate-400 hover:text-slate-200'
+                ? 'bg-slate-900 text-cyan-400 font-semibold border border-cyan-500/40 shadow-sm'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900/40 border border-transparent'
             }`}
           >
-            <HardDrive className="w-3.5 h-3.5" />
-            Windows
+            <HardDrive className="w-4 h-4 mb-1 shrink-0" />
+            <span className="text-[10px] sm:text-[11px] leading-tight truncate w-full text-center">
+              Windows
+            </span>
           </button>
         </div>
 
