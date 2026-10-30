@@ -668,7 +668,7 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
                 </div>
               </div>
 
-              {/* Forzar Hotspot sin internet (Bypass NCSI & SoftAP) */}
+              {/* Punto de acceso móvil sin internet (Wi-Fi Direct / SoftAP) */}
               <div className="p-3.5 rounded-xl bg-slate-950/60 border border-slate-800 space-y-3">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2.5">
@@ -676,9 +676,9 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
                       <Wifi className="w-4 h-4" />
                     </div>
                     <div>
-                      <h4 className="font-semibold text-slate-200 text-sm">Forzar Hotspot sin Internet</h4>
+                      <h4 className="font-semibold text-slate-200 text-sm">Punto de Acceso sin Internet</h4>
                       <p className="text-[11px] text-slate-400">
-                        Bypass NCSI &amp; SoftAP para Wi-Fi Direct (Realtek RTL8821CE)
+                        Wi-Fi Direct (SoftAP), sin exigir que Windows vea internet
                       </p>
                     </div>
                   </div>
@@ -699,11 +699,11 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
                 </div>
 
                 <p className="text-[11px] text-slate-400 leading-relaxed">
-                  Permite compartir la red por Wi-Fi aun cuando Windows no detecte una puerta de enlace de internet pública activa (enlace local o proxy institucional). Cuenta con <strong>rollback automático</strong> si el adaptador rechaza la difusión inalámbrica.
+                  Activa el punto de acceso móvil aunque Windows no detecte internet (red local o proxy institucional), que es lo que bloquea el interruptor de Configuración. Usa el <strong>SSID y la contraseña que ya tengas configurados</strong> en Windows y no modifica ningún ajuste de red.
                 </p>
 
                 {forceHotspotNotice && (
-                  <div className="p-2.5 rounded-lg bg-cyan-950/40 border border-cyan-800/50 text-cyan-300 text-[11px]">
+                  <div className="p-2.5 rounded-lg bg-cyan-950/40 border border-cyan-800/50 text-cyan-300 text-[11px] leading-relaxed whitespace-pre-line">
                     {forceHotspotNotice}
                   </div>
                 )}
@@ -719,7 +719,7 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
                     Verificar Wi-Fi Direct (SoftAP)
                   </button>
                   {forceHotspotActive && (
-                    <span className="text-[11px] font-mono text-cyan-400 font-medium">SSID: UniTunnel_UCI</span>
+                    <span className="text-[11px] font-mono text-cyan-400 font-medium">Punto de acceso activo</span>
                   )}
                 </div>
 

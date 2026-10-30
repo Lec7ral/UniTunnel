@@ -533,58 +533,74 @@ func (s *AppService) IsAlwaysOnTop() bool {
 	return s.cfg.AlwaysOnTop
 }
 
-// CheckHotspotCapability runs a diagnostic check on the Wi-Fi adapter (e.g. Realtek RTL8821CE) and SoftAP capabilities
+// CheckHotspotCapability returns a diagnostic report of the Wi-Fi Direct /
+// SoftAP subsystem: which interface Windows would share, whether tethering is
+// enabled and whether the hotspot is currently broadcasting.
 func (s *AppService) CheckHotspotCapability() (string, error) {
-	s.AddLog("HOTSPOT", "Iniciando diagnóstico de adaptador Wi-Fi y soporte SoftAP / Hosted Network...")
+	s.AddLog("HOTSPOT", "Consultando el punto de acceso móvil (Wi-Fi Direct / SoftAP)...")
 	diag, err := network.CheckHotspotCapability()
 	if err != nil {
-		s.AddLog("HOTSPOT", fmt.Sprintf("Error en diagnóstico: %v", err))
+		s.AddLog("HOTSPOT", fmt.Sprintf("Error en el diagnóstico del hotspot: %v", err))
 		return "", err
 	}
-	s.AddLog("HOTSPOT", "✓ Diagnóstico de Wi-Fi Direct / SoftAP completado.")
+	s.AddLog("HOTSPOT", "✓ Diagnóstico del punto de acceso completado.")
 	return diag, nil
 }
 
-// ToggleForceOfflineHotspot enables or disables local hotspot without internet connection requirement.
-// Includes automated rollback if execution or adapter broadcast encounters an error.
+// ToggleForceOfflineHotspot starts or stops the Windows Mobile Hotspot.
 //
-// IMPORTANT: this method must never hold s.mu while calling AddLog or while running
-// external commands. AddLog acquires the same non-reentrant sync.Mutex, so the
-// previous implementation deadlocked on the very first log line and froze every
-// later call (GetTrafficStats, IsConnected, ...) for the whole application.
+// The hotspot is started through the Wi-Fi Direct API instead of the legacy
+// "netsh wlan hostednetwork" interface: the legacy API is unsupported by modern
+// Windows 11 drivers ("Hosted network supported: No"), and the Settings app
+// refuses to start the hotspot while NCSI does not see internet access, which is
+// exactly the situation behind the UCI proxy.
+//
+// Nothing in the network configuration is modified: the SSID and the password
+// stay as the user configured them in Windows, so a failure can never leave the
+// machine with a broken or half-written network setup.
+//
+// IMPORTANT: this method must never hold s.mu while calling AddLog or while
+// running external commands. AddLog acquires the same non-reentrant
+// sync.Mutex, so the previous implementation deadlocked on the very first log
+// line and froze every later call for the whole application.
 func (s *AppService) ToggleForceOfflineHotspot(enable bool) HotspotToggleResult {
 	if enable {
-		s.AddLog("HOTSPOT", "Activando Hotspot forzado sin internet (Bypass NCSI / SoftAP)...")
-		err := network.EnableForceOfflineHotspot("UniTunnel_UCI", "unitunnel2026")
+		s.AddLog("HOTSPOT", "Activando el punto de acceso móvil sin exigir internet (Wi-Fi Direct)...")
+		summary, err := network.EnableOfflineHotspot()
 		if err != nil {
 			s.setHotspotForced(false)
-			s.AddLog("HOTSPOT", fmt.Sprintf("Fallo en activación: %v. Se ejecutó rollback automático.", err))
+			s.AddLog("HOTSPOT", fmt.Sprintf("No se pudo activar el hotspot: %v", err))
 			return HotspotToggleResult{
 				Success: false,
-				Message: fmt.Sprintf("Error: %v (Rollback automático completado).", err),
+				Message: fmt.Sprintf("No se pudo activar el hotspot: %v. Tu configuración de red quedó intacta.", err),
 				Enabled: false,
 			}
 		}
 		s.setHotspotForced(true)
-		s.AddLog("HOTSPOT", "✓ Hotspot forzado activo (SSID: UniTunnel_UCI | Clave: unitunnel2026). Compartición offline habilitada.")
+		s.AddLog("HOTSPOT", summary)
 		return HotspotToggleResult{
 			Success: true,
-			Message: "Hotspot offline activado con éxito. Red 'UniTunnel_UCI' disponible para conectar dispositivos.",
+			Message: summary,
 			Enabled: true,
 		}
 	}
 
-	s.AddLog("HOTSPOT", "Deteniendo difusión de Hotspot forzado y restaurando adaptador...")
-	err := network.DisableForceOfflineHotspot()
-	s.setHotspotForced(false)
-	if err != nil {
-		s.AddLog("HOTSPOT", fmt.Sprintf("Aviso al desactivar Hotspot: %v", err))
-	} else {
-		s.AddLog("HOTSPOT", "✓ Hotspot desactivado y adaptadores restaurados.")
+	s.AddLog("HOTSPOT", "Deteniendo el punto de acceso móvil...")
+	if err := network.DisableOfflineHotspot(); err != nil {
+		active, _ := network.HotspotActive()
+		s.setHotspotForced(active)
+		s.AddLog("HOTSPOT", fmt.Sprintf("No se pudo detener el hotspot: %v", err))
+		return HotspotToggleResult{
+			Success: false,
+			Message: fmt.Sprintf("No se pudo detener el hotspot: %v", err),
+			Enabled: active,
+		}
 	}
+	s.setHotspotForced(false)
+	s.AddLog("HOTSPOT", "✓ Punto de acceso detenido. La configuración de red de Windows no se modificó.")
 	return HotspotToggleResult{
 		Success: true,
-		Message: "Hotspot offline detenido y modo restaurado correctamente.",
+		Message: "Punto de acceso detenido. Tu configuración de red quedó intacta.",
 		Enabled: false,
 	}
 }
@@ -596,8 +612,13 @@ func (s *AppService) setHotspotForced(forced bool) {
 	s.mu.Unlock()
 }
 
-// IsHotspotForced returns current status of the forced hotspot
+// IsHotspotForced reports whether the mobile hotspot is currently broadcasting.
+// It asks Windows instead of trusting the cached flag, so the switch is correct
+// after a restart or when the hotspot was toggled from Windows Settings.
 func (s *AppService) IsHotspotForced() bool {
+	if active, err := network.HotspotActive(); err == nil {
+		s.setHotspotForced(active)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.hotspotForced
