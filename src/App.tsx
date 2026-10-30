@@ -296,7 +296,45 @@ export default function App() {
             <span>Ajustes</span>
           </button>
 
-          <span className="font-bold text-xs tracking-tight text-slate-200 uppercase tracking-widest">UniTunnel</span>
+          <div className="flex items-center gap-1.5 relative group">
+            <span className="font-bold text-xs tracking-tight text-slate-200 uppercase tracking-widest">UniTunnel</span>
+            <div className="relative inline-flex items-center">
+              <button
+                type="button"
+                className="p-0.5 rounded-full text-slate-500 hover:text-cyan-400 transition"
+                title="Acerca de UniTunnel"
+              >
+                <Info className="w-3.5 h-3.5" />
+              </button>
+
+              {/* Hover Popover Tooltip for App Info, Version & Developer */}
+              <div className="absolute left-1/2 -translate-x-1/2 top-full mt-2 w-64 p-3 bg-slate-900/95 backdrop-blur-md border border-cyan-800/60 rounded-xl shadow-2xl opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none group-hover:pointer-events-auto z-50 text-[11px] space-y-2 text-slate-300">
+                <div className="flex items-center justify-between border-b border-slate-800/80 pb-1.5 font-bold text-slate-100">
+                  <span className="text-cyan-400 font-bold">UniTunnel Desktop</span>
+                  <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-cyan-950 text-cyan-300 border border-cyan-800/60 font-semibold">
+                    v2.4.0
+                  </span>
+                </div>
+                <p className="text-[10px] text-slate-400 leading-snug">
+                  Acceso Universitario & Túnel de Red Transparente para la UCI.
+                </p>
+                <div className="pt-1.5 border-t border-slate-800/80 space-y-1 text-[10px]">
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-500">Desarrollador:</span>
+                    <span className="text-cyan-300 font-medium">Yoan B. · Red UCI</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-500">Tecnologías:</span>
+                    <span className="text-slate-300 font-mono">Go + Wintun + NTLMv2</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-500">Plataforma:</span>
+                    <span className="text-slate-300">Windows 10 / 11 (x64)</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
 
           <button
             onClick={() => setLogsOpen(true)}

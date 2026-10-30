@@ -808,56 +808,6 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
                   Cualquier cambio guardado desde este panel se sincroniza de inmediato con el archivo JSON y con el backend de Go.
                 </p>
               </div>
-
-              {/* Acerca de UniTunnel / Información del Sistema */}
-              <div className="p-4 rounded-xl bg-gradient-to-b from-slate-950/90 to-slate-900/70 border border-cyan-900/40 shadow-lg shadow-black/40 space-y-3.5">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-cyan-600 via-teal-600 to-emerald-600 flex items-center justify-center text-white shadow-lg shadow-cyan-950/80 shrink-0 border border-cyan-400/30">
-                    <ShieldCheck className="w-5 h-5 text-white" />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <h4 className="font-bold text-slate-100 text-sm tracking-tight">UniTunnel Desktop</h4>
-                      <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-cyan-950 text-cyan-300 border border-cyan-800/60 font-semibold">
-                        v2.4.0
-                      </span>
-                    </div>
-                    <p className="text-[11px] text-slate-400 truncate">
-                      Acceso Universitario & Túnel de Red Transparente
-                    </p>
-                  </div>
-                </div>
-
-                <p className="text-[11px] text-slate-300 leading-relaxed">
-                  Diseñado para la comunidad de la <strong>Universidad de las Ciencias Informáticas (UCI)</strong>. Proporciona enrutamiento de capa 3 con adaptador Wintun nativo, autenticación NTLMv2 automática en servidores Squid y bypass de Wi-Fi Direct.
-                </p>
-
-                <div className="grid grid-cols-2 gap-2 text-[10px] font-mono pt-1">
-                  <div className="p-2 rounded-lg bg-slate-900/90 border border-slate-800 space-y-0.5">
-                    <span className="text-slate-500 uppercase tracking-wider block text-[9px] font-sans font-semibold">Plataforma</span>
-                    <span className="text-slate-200">Windows 10 / 11 (x64)</span>
-                  </div>
-                  <div className="p-2 rounded-lg bg-slate-900/90 border border-slate-800 space-y-0.5">
-                    <span className="text-slate-500 uppercase tracking-wider block text-[9px] font-sans font-semibold">Desarrollo</span>
-                    <span className="text-cyan-400 font-sans font-medium">Yoan B. · Red UCI</span>
-                  </div>
-                  <div className="p-2 rounded-lg bg-slate-900/90 border border-slate-800 space-y-0.5">
-                    <span className="text-slate-500 uppercase tracking-wider block text-[9px] font-sans font-semibold">Core & Runtime</span>
-                    <span className="text-slate-200">Go 1.23 · Wails v3 Alpha</span>
-                  </div>
-                  <div className="p-2 rounded-lg bg-slate-900/90 border border-slate-800 space-y-0.5">
-                    <span className="text-slate-500 uppercase tracking-wider block text-[9px] font-sans font-semibold">Driver L3 Virtual</span>
-                    <span className="text-emerald-400">Wintun 0.14.1 TUN</span>
-                  </div>
-                </div>
-
-                <div className="flex flex-wrap items-center gap-1.5 pt-1 text-[10px] text-slate-400">
-                  <span className="px-2 py-0.5 rounded-md bg-slate-900 border border-slate-800/90 text-slate-300">Squid NTLMv2</span>
-                  <span className="px-2 py-0.5 rounded-md bg-slate-900 border border-slate-800/90 text-slate-300">SOCKS5 & HTTP</span>
-                  <span className="px-2 py-0.5 rounded-md bg-slate-900 border border-slate-800/90 text-slate-300">SoftAP Wi-Fi Direct</span>
-                  <span className="px-2 py-0.5 rounded-md bg-slate-900 border border-slate-800/90 text-emerald-400">Software Libre Académico</span>
-                </div>
-              </div>
             </div>
           )}
         </div>

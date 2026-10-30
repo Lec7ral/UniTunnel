@@ -259,6 +259,15 @@ func main() {
 		}()
 	})
 
+	hotspotItem := trayMenu.AddCheckbox("Punto de Acceso / Zona Wi-Fi", appService.IsHotspotForced())
+	hotspotItem.OnClick(func(ctx *application.Context) {
+		go func() {
+			current := appService.IsHotspotForced()
+			res := appService.ToggleForceOfflineHotspot(!current)
+			hotspotItem.SetChecked(res.Enabled)
+		}()
+	})
+
 	trayMenu.AddSeparator()
 
 	alwaysOnTopItem := trayMenu.AddCheckbox("Fijar al frente (Siempre visible)", cfg.AlwaysOnTop)

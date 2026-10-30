@@ -1,4 +1,5 @@
-100 ICON "icon.ico"
+1 ICON "icon.ico"
+3 ICON "icon.ico"
 1 24 "unitunnel.manifest"
 
 1 VERSIONINFO
