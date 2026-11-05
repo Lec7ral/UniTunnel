@@ -22,6 +22,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: unitunnel-go/go.mod
+          cache-dependency-path: unitunnel-go/go.sum
           check-latest: true
 
       - name: Set up Node.js

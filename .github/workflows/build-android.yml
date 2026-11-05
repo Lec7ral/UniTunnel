@@ -21,6 +21,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: unitunnel-go/go.mod
+          cache-dependency-path: unitunnel-go/go.sum
           check-latest: true
 
       # 2. Setup Node.js for frontend build
@@ -52,7 +53,7 @@ jobs:
 
       # 5. Set up Java JDK 17 for Android Gradle build
       - name: Set up Java JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: 'temurin'
           java-version: '17'
@@ -62,6 +63,18 @@ jobs:
         uses: android-actions/setup-android@v3
         with:
           packages: 'platforms;android-35 build-tools;35.0.0 ndk;26.3.11579264'
+
+      # 6b. Prepare Go Modules (Ensure go.sum exists and dependencies are downloaded)
+      - name: Prepare Go Modules
+        working-directory: ./unitunnel-go
+        run: |
+          if [ ! -f "go.sum" ]; then
+            echo "go.sum missing, generating with go mod tidy..."
+            go mod tidy
+          else
+            go mod tidy
+          fi
+          go mod download
 
       # 7. Compile Go Core for Android (libwails.so)
       - name: Compile Go Core Shared Library for Android (arm64 & x86_64)
