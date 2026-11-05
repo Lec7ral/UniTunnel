@@ -83,33 +83,44 @@ jobs:
           mkdir -p android/app/src/main/jniLibs/x86_64
 
           if [ -z "$ANDROID_NDK_ROOT" ] || [ ! -d "$ANDROID_NDK_ROOT" ]; then
-            if [ -d "$ANDROID_HOME/ndk/26.3.11579264" ]; then
+            if [ -n "$ANDROID_NDK_LATEST_HOME" ] && [ -d "$ANDROID_NDK_LATEST_HOME" ]; then
+              export ANDROID_NDK_ROOT="$ANDROID_NDK_LATEST_HOME"
+            elif [ -n "$ANDROID_NDK_HOME" ] && [ -d "$ANDROID_NDK_HOME" ]; then
+              export ANDROID_NDK_ROOT="$ANDROID_NDK_HOME"
+            elif [ -d "$ANDROID_HOME/ndk/26.3.11579264" ]; then
               export ANDROID_NDK_ROOT="$ANDROID_HOME/ndk/26.3.11579264"
             else
-              export ANDROID_NDK_ROOT=$(ls -d $ANDROID_HOME/ndk/* 2>/dev/null | sort -V | tail -n 1)
+              export ANDROID_NDK_ROOT=$(find $ANDROID_HOME/ndk -maxdepth 1 -mindepth 1 2>/dev/null | sort -V | tail -n 1)
             fi
           fi
-          echo "Using Android NDK: $ANDROID_NDK_ROOT"
+          echo "Using Android NDK Root: $ANDROID_NDK_ROOT"
 
           TOOLCHAIN="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          if [ ! -d "$TOOLCHAIN" ]; then
+            echo "::error::NDK Toolchain directory $TOOLCHAIN does not exist!"
+            exit 1
+          fi
+
+          CLANG_ARM64=$(find "$TOOLCHAIN" -name "aarch64-linux-android*-clang" | sort -V | tail -n 1)
+          CLANG_X86_64=$(find "$TOOLCHAIN" -name "x86_64-linux-android*-clang" | sort -V | tail -n 1)
+
+          echo "ARM64 Compiler: $CLANG_ARM64"
+          echo "x86_64 Compiler: $CLANG_X86_64"
 
           # Compile for ARM64 (aarch64)
           echo "Compiling Go shared library for aarch64 (arm64-v8a)..."
-          if [ -d "$TOOLCHAIN" ]; then
-            CGO_ENABLED=1 GOOS=android GOARCH=arm64 \
-            CC="$TOOLCHAIN/aarch64-linux-android26-clang" \
-            go build -C unitunnel-go -buildmode=c-shared -ldflags="-s -w" \
-            -o ../android/app/src/main/jniLibs/arm64-v8a/libwails.so . || true
-          fi
+          CGO_ENABLED=1 GOOS=android GOARCH=arm64 CC="$CLANG_ARM64" \
+          go build -C unitunnel-go -buildmode=c-shared -ldflags="-s -w" \
+          -o ../android/app/src/main/jniLibs/arm64-v8a/libwails.so .
 
           # Compile for x86_64 (emulator)
           echo "Compiling Go shared library for x86_64..."
-          if [ -d "$TOOLCHAIN" ]; then
-            CGO_ENABLED=1 GOOS=android GOARCH=amd64 \
-            CC="$TOOLCHAIN/x86_64-linux-android26-clang" \
-            go build -C unitunnel-go -buildmode=c-shared -ldflags="-s -w" \
-            -o ../android/app/src/main/jniLibs/x86_64/libwails.so . || true
-          fi
+          CGO_ENABLED=1 GOOS=android GOARCH=amd64 CC="$CLANG_X86_64" \
+          go build -C unitunnel-go -buildmode=c-shared -ldflags="-s -w" \
+          -o ../android/app/src/main/jniLibs/x86_64/libwails.so .
+
+          ls -la android/app/src/main/jniLibs/arm64-v8a/libwails.so
+          ls -la android/app/src/main/jniLibs/x86_64/libwails.so
 
       # 8. Setup Gradle executable permissions
       - name: Make Gradle Wrapper Executable
@@ -120,7 +131,6 @@ jobs:
       - name: Build Android APK with Gradle
         working-directory: ./android
         run: |
-          # If gradlew wrapper is present use it, otherwise use system gradle
           if [ -f "./gradlew" ]; then
             ./gradlew assembleDebug --no-daemon --stacktrace
           else
@@ -131,7 +141,15 @@ jobs:
       - name: Prepare APK Release Artifacts
         run: |
           mkdir -p dist-android
-          cp android/app/build/outputs/apk/debug/*.apk dist-android/unitunnel-v2.4.0-debug.apk || true
+          APK_PATH=$(find android/app/build/outputs/apk/debug/ -name "*.apk" 2>/dev/null | head -n 1)
+          if [ -z "$APK_PATH" ] || [ ! -f "$APK_PATH" ]; then
+            echo "::error::No debug APK found in android/app/build/outputs/apk/debug/!"
+            exit 1
+          fi
+
+          echo "Found compiled APK at: $APK_PATH"
+          cp "$APK_PATH" dist-android/unitunnel-v2.4.0-debug.apk
+          echo "APK successfully copied to dist-android/unitunnel-v2.4.0-debug.apk"
 
           cat << 'EOF' > dist-android/LEEME_ANDROID.txt
           =======================================================
@@ -159,7 +177,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: unitunnel-android-apk
-          path: |
-            dist-android/
-            android/app/build/outputs/apk/debug/*.apk
+          path: dist-android/
           retention-days: 30
