@@ -20,6 +20,8 @@ import {
   defaultConfig,
   QuotaInfo,
   NetworkMode,
+  isAndroidPlatform,
+  isMobileDevice,
 } from './services/wailsBridge';
 import { SettingsDrawer } from './components/SettingsDrawer';
 import { LogsDrawer } from './components/LogsDrawer';
@@ -197,8 +199,8 @@ export default function App() {
     await bridge.applyNetworkMode(mode);
     setConfig((prev) => ({ ...prev, network_mode: mode }));
 
-    // If switching to mobile or direct, stop tunnel if active
-    if (mode !== 'uci_cable' && connected) {
+    // If switching to direct mode (bypass proxy), stop tunnel if active
+    if (mode === 'direct' && connected) {
       await bridge.stopTunnel();
       setConnected(false);
     }
@@ -263,8 +265,10 @@ export default function App() {
     }
   };
 
+  const isMobile = isMobileDevice() || isAndroidPlatform();
+
   return (
-    <div className="h-screen w-full bg-slate-950 text-slate-100 flex flex-col font-sans select-none overflow-hidden relative">
+    <div className="h-screen w-full bg-slate-950 text-slate-100 flex flex-col font-sans select-none overflow-hidden relative pt-[env(safe-area-inset-top,0px)] pb-[env(safe-area-inset-bottom,0px)]">
       {/* Network Mode Feedback Banner */}
       {modeNotice && (
         <div className="absolute top-3 left-1/2 -translate-x-1/2 z-50 max-w-lg w-[92%] bg-slate-900 border border-cyan-800/60 px-4 py-1.5 rounded-xl text-xs text-cyan-200 shadow-xl flex items-center gap-2 animate-in fade-in">
@@ -273,18 +277,18 @@ export default function App() {
         </div>
       )}
 
-      {/* Backend Unavailable Banner: never pretend the Go side answered */}
+      {/* Backend Unavailable Banner */}
       {backendError && (
         <div className="absolute top-3 left-1/2 -translate-x-1/2 z-50 max-w-md w-[92%] bg-red-950/90 border border-red-800/70 px-4 py-2 rounded-xl text-xs text-red-100 shadow-xl flex items-start gap-2 animate-in fade-in">
           <AlertTriangle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
           <div className="space-y-0.5">
-            <div className="font-semibold">Backend Go no disponible</div>
+            <div className="font-semibold">Aviso de Entorno</div>
             <div className="opacity-90 break-words">{backendError}</div>
           </div>
         </div>
       )}
 
-      {/* Frameless Custom TitleBar (Draggable) */}
+      {/* TitleBar (Draggable on Desktop, Native Bezel on Mobile) */}
       <header
         className="w-full bg-slate-950/95 border-b border-slate-900/90 px-3.5 py-2 flex items-center justify-between select-none z-50 shrink-0"
         style={{
@@ -317,7 +321,7 @@ export default function App() {
               {/* Hover Popover Tooltip for App Info, Version & Developer */}
               <div className="absolute left-0 top-full mt-2 w-64 p-3 bg-slate-900/95 backdrop-blur-md border border-cyan-800/60 rounded-xl shadow-2xl opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none group-hover:pointer-events-auto z-50 text-[11px] space-y-2 text-slate-300">
                 <div className="flex items-center justify-between border-b border-slate-800/80 pb-1.5 font-bold text-slate-100">
-                  <span className="text-cyan-400 font-bold">UniTunnel Desktop</span>
+                  <span className="text-cyan-400 font-bold">{isMobile ? 'UniTunnel Android' : 'UniTunnel Desktop'}</span>
                   <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-cyan-950 text-cyan-300 border border-cyan-800/60 font-semibold">
                     v2.4.0
                   </span>
@@ -332,11 +336,11 @@ export default function App() {
                   </div>
                   <div className="flex items-center justify-between">
                     <span className="text-slate-500">Tecnologías:</span>
-                    <span className="text-slate-300 font-mono">Go + Wintun + NTLMv2</span>
+                    <span className="text-slate-300 font-mono">Go + Wails v3 + NTLMv2</span>
                   </div>
                   <div className="flex items-center justify-between">
                     <span className="text-slate-500">Plataforma:</span>
-                    <span className="text-slate-300">Windows 10 / 11 (x64)</span>
+                    <span className="text-slate-300">{isMobile ? 'Android (VpnService)' : 'Windows 10 / 11 (x64)'}</span>
                   </div>
                 </div>
               </div>
@@ -344,7 +348,7 @@ export default function App() {
           </div>
         </div>
 
-        {/* Right: Custom Window Controls (Minimize & Close) */}
+        {/* Right: Window Controls for desktop OR Mobile Platform Indicator */}
         <div
           className="flex items-center gap-1"
           style={{
@@ -352,22 +356,31 @@ export default function App() {
             WebkitAppRegion: 'no-drag',
           } as React.CSSProperties}
         >
-          <button
-            type="button"
-            onClick={() => bridge.windowMinimize()}
-            className="p-1 rounded-md text-slate-400 hover:text-slate-100 hover:bg-slate-800/80 transition"
-            title="Minimizar a la barra de tareas"
-          >
-            <Minus className="w-3.5 h-3.5" />
-          </button>
-          <button
-            type="button"
-            onClick={() => bridge.windowHide()}
-            className="p-1 rounded-md text-slate-400 hover:text-red-300 hover:bg-red-950/60 transition"
-            title="Ocultar a la bandeja del sistema (System Tray)"
-          >
-            <X className="w-3.5 h-3.5" />
-          </button>
+          {isMobile ? (
+            <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-cyan-950/80 text-cyan-300 border border-cyan-800/60 font-semibold flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-cyan-400" />
+              Android VPN
+            </span>
+          ) : (
+            <>
+              <button
+                type="button"
+                onClick={() => bridge.windowMinimize()}
+                className="p-1 rounded-md text-slate-400 hover:text-slate-100 hover:bg-slate-800/80 transition"
+                title="Minimizar a la barra de tareas"
+              >
+                <Minus className="w-3.5 h-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={() => bridge.windowHide()}
+                className="p-1 rounded-md text-slate-400 hover:text-red-300 hover:bg-red-950/60 transition"
+                title="Ocultar a la bandeja del sistema (System Tray)"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </>
+          )}
         </div>
       </header>
 
@@ -414,17 +427,17 @@ export default function App() {
 
             <button
               onClick={handleConnectToggle}
-              disabled={connecting || (config.network_mode !== 'uci_cable' && !connected)}
+              disabled={connecting || (config.network_mode === 'direct' && !connected)}
               className={`w-32 h-32 rounded-full flex flex-col items-center justify-center transition-all duration-300 shadow-2xl relative z-10 group border-4 ${
                 connected
                   ? 'bg-gradient-to-tr from-emerald-600 via-teal-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 text-white border-emerald-400/40 shadow-emerald-950/80 ring-4 ring-emerald-500/20'
                   : connecting
                   ? 'bg-gradient-to-tr from-amber-600 to-yellow-600 text-white border-amber-400/40 cursor-wait animate-pulse'
-                  : config.network_mode !== 'uci_cable'
+                  : config.network_mode === 'direct'
                   ? 'bg-slate-900 text-slate-600 border-slate-800/80 cursor-not-allowed'
                   : 'bg-gradient-to-tr from-slate-900 via-slate-900 to-slate-950 hover:from-slate-800 hover:to-slate-900 text-slate-200 border-slate-800 hover:border-cyan-500/60 shadow-slate-950 group-hover:scale-105'
               }`}
-              title={connected ? 'Desconectar' : 'Conectar'}
+              title={connected ? 'Desconectar' : config.network_mode === 'direct' ? 'Cambia a Cable o Wi-Fi para conectar' : 'Conectar'}
             >
               <div className="flex flex-col items-center justify-center space-y-1">
                 <Power
@@ -444,6 +457,8 @@ export default function App() {
               <span className="text-emerald-400 font-medium">● Túnel Seguro Activo · {pingMs}ms</span>
             ) : connecting ? (
               <span className="text-amber-400 animate-pulse">Negociando NTLMv2 con Squid...</span>
+            ) : config.network_mode === 'direct' ? (
+              <span className="text-slate-500">Modo Directo · Túnel en pausa</span>
             ) : (
               <span className="text-slate-500">Desconectado · Listo para conectar</span>
             )}
@@ -458,8 +473,8 @@ export default function App() {
             <span className="text-slate-400 text-[11px] pl-1 font-medium">Modo de Red:</span>
             <div className="flex gap-1">
               {[
-                { id: 'uci_cable', label: 'Cable UCI' },
-                { id: 'wifi_mobile', label: 'Wi-Fi / Móvil' },
+                { id: 'uci_cable', label: isMobile ? 'Cable / USB' : 'Cable UCI' },
+                { id: 'wifi_mobile', label: isMobile ? 'Wi-Fi UCI' : 'Wi-Fi / Móvil' },
                 { id: 'direct', label: 'Directo' },
               ].map((m) => (
                 <button

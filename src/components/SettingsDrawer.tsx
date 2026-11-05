@@ -120,9 +120,9 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
   };
 
   const handleResetDefaults = () => {
-    if (window.confirm('¿Deseas restablecer todos los valores de configuración a los predeterminados?')) {
-      setCfg({ ...defaultConfig, accounts: cfg.accounts });
-    }
+    setCfg({ ...defaultConfig, accounts: cfg.accounts });
+    setSaveSuccess(true);
+    setTimeout(() => setSaveSuccess(false), 2000);
   };
 
   const handleAddAccount = () => {
@@ -151,7 +151,8 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
 
   const handleDeleteAccount = (id: string) => {
     if (cfg.accounts.length <= 1) {
-      alert('Debe existir al menos un perfil de cuenta.');
+      setSaveError('Debe existir al menos un perfil de cuenta.');
+      setTimeout(() => setSaveError(null), 3500);
       return;
     }
     setCfg((prev) => {

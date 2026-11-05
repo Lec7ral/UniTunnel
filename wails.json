@@ -25,5 +25,20 @@
     "uac": {
       "level": "requireAdministrator"
     }
+  },
+  "android": {
+    "packageName": "cu.uci.unitunnel",
+    "applicationName": "UniTunnel",
+    "versionCode": 240,
+    "versionName": "2.4.0",
+    "minSdkVersion": 26,
+    "targetSdkVersion": 35,
+    "permissions": [
+      "android.permission.INTERNET",
+      "android.permission.FOREGROUND_SERVICE",
+      "android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE",
+      "android.permission.BIND_VPN_SERVICE",
+      "android.permission.ACCESS_NETWORK_STATE"
+    ]
   }
 }

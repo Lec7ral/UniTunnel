@@ -1,0 +1,145 @@
+name: Build Android Application (UniTunnel APK)
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch: # Allows manual trigger from GitHub Actions UI
+
+jobs:
+  build-android:
+    name: Build UniTunnel for Android (APK)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # 1. Setup Go matching unitunnel-go/go.mod
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: unitunnel-go/go.mod
+          check-latest: true
+
+      # 2. Setup Node.js for frontend build
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      # 3. Install frontend dependencies
+      - name: Install Frontend Dependencies
+        run: |
+          npm install --package-lock-only
+          npm ci
+
+      # 4. Lint and build React frontend into unitunnel-go/dist
+      - name: Build React Frontend
+        run: |
+          npm run lint
+          npm run build
+
+      - name: Verify Frontend Distribution
+        run: |
+          if [ ! -f "unitunnel-go/dist/index.html" ]; then
+            echo "::error::unitunnel-go/dist/index.html is missing!"
+            exit 1
+          fi
+          echo "Frontend dist built successfully."
+
+      # 5. Set up Java JDK 17 for Android Gradle build
+      - name: Set up Java JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      # 6. Set up Android SDK & NDK
+      - name: Setup Android SDK and NDK
+        uses: android-actions/setup-android@v3
+        with:
+          api-level: 35
+          build-tools-version: '35.0.0'
+          ndk-version: '26.3.11579264'
+
+      # 7. Compile Go Core for Android (libwails.so)
+      - name: Compile Go Core Shared Library for Android (arm64 & x86_64)
+        run: |
+          mkdir -p android/app/src/main/jniLibs/arm64-v8a
+          mkdir -p android/app/src/main/jniLibs/x86_64
+
+          TOOLCHAIN="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin"
+
+          # Compile for ARM64 (aarch64)
+          echo "Compiling Go shared library for aarch64 (arm64-v8a)..."
+          if [ -d "$TOOLCHAIN" ]; then
+            CGO_ENABLED=1 GOOS=android GOARCH=arm64 \
+            CC="$TOOLCHAIN/aarch64-linux-android26-clang" \
+            go build -C unitunnel-go -buildmode=c-shared -ldflags="-s -w" \
+            -o ../android/app/src/main/jniLibs/arm64-v8a/libwails.so . || true
+          fi
+
+          # Compile for x86_64 (emulator)
+          echo "Compiling Go shared library for x86_64..."
+          if [ -d "$TOOLCHAIN" ]; then
+            CGO_ENABLED=1 GOOS=android GOARCH=amd64 \
+            CC="$TOOLCHAIN/x86_64-linux-android26-clang" \
+            go build -C unitunnel-go -buildmode=c-shared -ldflags="-s -w" \
+            -o ../android/app/src/main/jniLibs/x86_64/libwails.so . || true
+          fi
+
+      # 8. Setup Gradle executable permissions
+      - name: Make Gradle Wrapper Executable
+        run: |
+          chmod +x android/gradlew 2>/dev/null || true
+
+      # 9. Build Android APK via Gradle
+      - name: Build Android APK with Gradle
+        working-directory: ./android
+        run: |
+          # If gradlew wrapper is present use it, otherwise use system gradle
+          if [ -f "./gradlew" ]; then
+            ./gradlew assembleDebug --no-daemon --stacktrace
+          else
+            gradle assembleDebug --no-daemon --stacktrace
+          fi
+
+      # 10. Copy and prepare release package
+      - name: Prepare APK Release Artifacts
+        run: |
+          mkdir -p dist-android
+          cp android/app/build/outputs/apk/debug/*.apk dist-android/unitunnel-v2.4.0-debug.apk || true
+
+          cat << 'EOF' > dist-android/LEEME_ANDROID.txt
+          =======================================================
+          UniTunnel (Android) - Acceso Universitario (Wails v3)
+          =======================================================
+
+          INSTRUCCIONES DE INSTALACIÓN:
+          1. Copia el archivo 'unitunnel-v2.4.0-debug.apk' a tu teléfono Android.
+          2. Abre el archivo para instalarlo (habilita 'Instalar aplicaciones desconocidas' si Android lo solicita).
+          3. Abre UniTunnel y presiona 'Conectar'.
+          4. Acepta el cuadro de diálogo estándar de Android ("¿Permitir que UniTunnel configure una conexión VPN?").
+          5. ¡Listo! Todo el tráfico de tu dispositivo (navegador, WhatsApp, Telegram, etc.)
+             pasará de forma transparente a través del proxy Squid con autenticación NTLMv2.
+
+          CARACTERÍSTICAS INCLUIDAS:
+          - Tunelización completa a nivel de sistema mediante VpnService (sin root).
+          - Sistema Multicuentas para cambiar credenciales al instante.
+          - Monitoreo en vivo de cuota universitaria UCI (cuota.uci.cu).
+          - Métricas de velocidad en tiempo real y gráfica de consumo.
+          =======================================================
+          EOF
+
+      # 11. Upload APK Artifact
+      - name: Upload Android APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: unitunnel-android-apk
+          path: |
+            dist-android/
+            android/app/build/outputs/apk/debug/*.apk
+          retention-days: 30

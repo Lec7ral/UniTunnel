@@ -1,0 +1,6 @@
+{
+  "summary": "Plan de implementación revisado para UniTunnel en Android: incluye tunelización completa (VpnService + NTLMv2), sistema multicuentas (gestión y cambio rápido), métricas de red completas (velocidad en tiempo real, latencia/ping, gráfica dinámica y priorización de interfaz) y consulta de cuota UCI.",
+  "updatedAt": "2026-11-05T19:53:30.342482240Z",
+  "requestFeedback": true,
+  "userFacing": true
+}

@@ -1,0 +1,8 @@
+{
+  "name": "UniTunnel",
+  "description": "Panel de control de UniTunnel: cliente de túnel Wintun y proxy Squid para redes institucionales.",
+  "permissions": [],
+  "capabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
