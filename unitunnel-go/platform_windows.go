@@ -27,7 +27,7 @@ func initPlatformPreStartup() {
 	log.Printf("[DEBUG] Elevation result: IsElevated=%v", isElevated)
 }
 
-func acquirePlatformInstanceLock() (singleinstance.Lock, bool) {
+func acquirePlatformInstanceLock() (*singleinstance.Lock, bool) {
 	return singleinstance.Acquire(singleInstanceMutex, windowTitle)
 }
 

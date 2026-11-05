@@ -12,16 +12,12 @@ import (
 	"unitunnel/pkg/singleinstance"
 )
 
-type dummyLock struct{}
-
-func (d dummyLock) Release() {}
-
 func initPlatformPreStartup() {
 	log.Println("[POSIX] Generic platform pre-startup")
 }
 
-func acquirePlatformInstanceLock() (singleinstance.Lock, bool) {
-	return dummyLock{}, true
+func acquirePlatformInstanceLock() (*singleinstance.Lock, bool) {
+	return nil, true
 }
 
 func initPlatformPostConfig(cfg *config.Config, appService *service.AppService) {

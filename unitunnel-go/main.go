@@ -40,7 +40,9 @@ func main() {
 		log.Printf("[INFO] %s ya está en ejecución; se enfocó la ventana existente.", singleinstance.Describe(singleInstanceMutex))
 		return
 	}
-	defer instanceLock.Release()
+	if instanceLock != nil {
+		defer instanceLock.Release()
+	}
 
 	// Global Panic Recovery Handler: captures stack trace to log file if runtime panics occur
 	defer func() {

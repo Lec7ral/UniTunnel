@@ -12,17 +12,13 @@ import (
 	"unitunnel/pkg/singleinstance"
 )
 
-type dummyLock struct{}
-
-func (d dummyLock) Release() {}
-
 func initPlatformPreStartup() {
 	log.Println("[ANDROID] Step 1-2: Initializing UniTunnel Android mobile runtime")
 }
 
-func acquirePlatformInstanceLock() (singleinstance.Lock, bool) {
+func acquirePlatformInstanceLock() (*singleinstance.Lock, bool) {
 	// Android handles single-instance lifecycle via Activity launchMode (singleTop / singleTask)
-	return dummyLock{}, true
+	return nil, true
 }
 
 func initPlatformPostConfig(cfg *config.Config, appService *service.AppService) {

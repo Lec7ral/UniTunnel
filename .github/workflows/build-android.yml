@@ -61,15 +61,22 @@ jobs:
       - name: Setup Android SDK and NDK
         uses: android-actions/setup-android@v3
         with:
-          api-level: 35
-          build-tools-version: '35.0.0'
-          ndk-version: '26.3.11579264'
+          packages: 'platforms;android-35 build-tools;35.0.0 ndk;26.3.11579264'
 
       # 7. Compile Go Core for Android (libwails.so)
       - name: Compile Go Core Shared Library for Android (arm64 & x86_64)
         run: |
           mkdir -p android/app/src/main/jniLibs/arm64-v8a
           mkdir -p android/app/src/main/jniLibs/x86_64
+
+          if [ -z "$ANDROID_NDK_ROOT" ] || [ ! -d "$ANDROID_NDK_ROOT" ]; then
+            if [ -d "$ANDROID_HOME/ndk/26.3.11579264" ]; then
+              export ANDROID_NDK_ROOT="$ANDROID_HOME/ndk/26.3.11579264"
+            else
+              export ANDROID_NDK_ROOT=$(ls -d $ANDROID_HOME/ndk/* 2>/dev/null | sort -V | tail -n 1)
+            fi
+          fi
+          echo "Using Android NDK: $ANDROID_NDK_ROOT"
 
           TOOLCHAIN="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin"
 
