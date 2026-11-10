@@ -246,14 +246,34 @@ export const ChainingDrawer: React.FC<ChainingDrawerProps> = ({
           {/* Quick Setup Guide */}
           <div>
             <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
-              Pasos para conectar Psiphon
+              Pasos para conectar Psiphon con UniTunnel
             </div>
             <ol className="space-y-2 text-xs text-slate-400 list-decimal list-inside bg-slate-950/40 p-3.5 rounded-lg border border-slate-800">
+              <li>Verifica que <span className="text-emerald-300 font-medium">UniTunnel esté Conectado</span> (en Modo Encadenamiento).</li>
               <li>Abre <span className="text-slate-200 font-medium">Psiphon</span> y ve a <span className="text-slate-200 font-medium">Ajustes → Proxy aguas arriba (Upstream Proxy)</span>.</li>
-              <li>Marca la casilla y configura <span className="font-mono text-cyan-300">Host: 127.0.0.1</span> y <span className="font-mono text-cyan-300">Puerto: {httpPort}</span>.</li>
-              <li>En <span className="text-slate-200 font-medium">Autenticación</span> en Psiphon, déjala desmarcada (UniTunnel ya autentica con NTLMv2).</li>
-              <li>Conecta Psiphon. Una vez conectado, importa el perfil descargado en <span className="text-slate-200 font-medium">Proxifier</span>.</li>
+              <li>
+                Marca <span className="text-slate-200 font-medium">Usar proxy aguas arriba</span> y configura:
+                <div className="mt-1 pl-4 space-y-0.5 text-slate-300 font-mono text-[11px]">
+                  <div>• Tipo: <span className="text-cyan-300">HTTP/HTTPS ({httpPort})</span> o <span className="text-emerald-300">SOCKS5 ({socksPort})</span></div>
+                  <div>• Host / IP: <span className="text-cyan-300">127.0.0.1</span></div>
+                  <div>• Autenticación: <span className="text-amber-300 font-semibold">DESMARCADA</span> (UniTunnel maneja el NTLM)</div>
+                </div>
+              </li>
+              <li>
+                En <span className="text-slate-200 font-medium">Protocolos / Modo de transporte de Psiphon</span>, asegúrate de permitir <span className="text-cyan-300">Meek (HTTPS / Domain Fronting)</span> o túnel SSL en puerto 443 (Squid bloquea puertos no SSL).
+              </li>
+              <li>Haz clic en <span className="text-slate-200 font-medium">Conectar</span> en Psiphon. Una vez establecido el túnel, abre <span className="text-slate-200 font-medium">Proxifier</span> y carga el perfil descargado.</li>
             </ol>
+          </div>
+
+          {/* 502 Bad Gateway Help Note */}
+          <div className="p-3 bg-amber-950/30 border border-amber-800/60 rounded-lg text-xs space-y-1 text-amber-200/90">
+            <div className="font-semibold flex items-center gap-1 text-amber-300">
+              <span>⚠ ¿Psiphon muestra "502 Bad Gateway" o "Connection closed"?</span>
+            </div>
+            <p className="text-[11px] leading-relaxed text-amber-200/80">
+              Ocurre si Psiphon intenta conectar a IPs numéricas o puertos bloqueados por el Squid de la UCI (como el 80, 8080 o 22), o si la casilla "El proxy requiere autenticación" fue marcada dentro de Psiphon. UniTunnel ahora incluye inspección SNI automática y reenvío NTLM persistente, pero es fundamental no marcar autenticación en Psiphon y usar transporte HTTPS/Meek.
+            </p>
           </div>
         </div>
 

@@ -35,10 +35,6 @@ func (b *connClosingBody) Close() error {
 
 // DoHTTP forwards a plain (non-CONNECT) HTTP request to the upstream proxy using
 // an absolute URI, which is what Squid expects for cleartext traffic.
-//
-// The previous implementation opened a CONNECT tunnel to port 80, and the
-// university ACL denies CONNECT to anything other than 443, so every plain HTTP
-// request failed with 502.
 func (d *Dialer) DoHTTP(req *http.Request) (*http.Response, error) {
 	if locked, reason := d.IsAuthLocked(); locked {
 		return nil, fmt.Errorf("conexión bloqueada por seguridad: %s (detenido para proteger tu cuenta de dominio)", reason)
@@ -65,7 +61,6 @@ func (d *Dialer) DoHTTP(req *http.Request) (*http.Response, error) {
 		cleanDomain, cleanUser = auth.SplitDomainUser(account.Domain, account.Username)
 	}
 
-	// buildAuth returns the Proxy-Authorization value for the configured scheme.
 	basicAuth := func() string {
 		if account == nil || cleanUser == "" {
 			return ""
@@ -73,12 +68,12 @@ func (d *Dialer) DoHTTP(req *http.Request) (*http.Response, error) {
 		return "Basic " + base64.StdEncoding.EncodeToString([]byte(cleanUser+":"+account.Password))
 	}
 
-	send := func(authHeader string) (*http.Response, error) {
-		conn, err := net.DialTimeout("tcp", d.ProxyAddress(), 10*time.Second)
-		if err != nil {
-			return nil, fmt.Errorf("error al conectar con el proxy universitario %s: %w", d.ProxyAddress(), err)
-		}
+	conn, err := net.DialTimeout("tcp", d.ProxyAddress(), 10*time.Second)
+	if err != nil {
+		return nil, fmt.Errorf("error al conectar con el proxy universitario %s: %w", d.ProxyAddress(), err)
+	}
 
+	prepareReq := func(authHeader string) *http.Request {
 		out := req.Clone(req.Context())
 		out.RequestURI = ""
 		if !out.URL.IsAbs() {
@@ -96,20 +91,7 @@ func (d *Dialer) DoHTTP(req *http.Request) (*http.Response, error) {
 		if authHeader != "" {
 			out.Header.Set("Proxy-Authorization", authHeader)
 		}
-
-		// WriteProxy emits the absolute-URI request line Squid expects.
-		if err := out.WriteProxy(conn); err != nil {
-			_ = conn.Close()
-			return nil, fmt.Errorf("error enviando la petición HTTP al proxy: %w", err)
-		}
-
-		resp, err := http.ReadResponse(bufio.NewReader(conn), out)
-		if err != nil {
-			_ = conn.Close()
-			return nil, fmt.Errorf("error leyendo la respuesta del proxy: %w", err)
-		}
-		resp.Body = &connClosingBody{ReadCloser: resp.Body, conn: conn}
-		return resp, nil
+		return out
 	}
 
 	firstAuth := ""
@@ -122,19 +104,31 @@ func (d *Dialer) DoHTTP(req *http.Request) (*http.Response, error) {
 		}
 	}
 
-	resp, err := send(firstAuth)
+	outReq1 := prepareReq(firstAuth)
+	if err := outReq1.WriteProxy(conn); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("error enviando petición HTTP al proxy: %w", err)
+	}
+
+	bufr := bufio.NewReader(conn)
+	resp1, err := http.ReadResponse(bufr, outReq1)
 	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode != http.StatusProxyAuthRequired {
-		return resp, nil
+		_ = conn.Close()
+		return nil, fmt.Errorf("error leyendo respuesta del proxy: %w", err)
 	}
 
-	challengeNTLM := resp.Header.Get("Proxy-Authenticate")
-	_ = resp.Body.Close()
+	if resp1.StatusCode != http.StatusProxyAuthRequired {
+		resp1.Body = &connClosingBody{ReadCloser: resp1.Body, conn: conn}
+		return resp1, nil
+	}
 
-	// NTLM: answer the Type-2 challenge with a Type-3 message on a fresh
-	// connection (the credentials are bound to the connection).
+	challengeNTLM := resp1.Header.Get("Proxy-Authenticate")
+	// Drain the 407 response body without closing conn, so conn stays active for NTLM Type-3
+	_, _ = io.Copy(io.Discard, resp1.Body)
+	_ = resp1.Body.Close()
+
+	// NTLM: answer the Type-2 challenge with a Type-3 message on the SAME
+	// connection (NTLM requires connection persistence).
 	if account != nil && cleanUser != "" && strings.Contains(strings.ToUpper(challengeNTLM), "NTLM") {
 		challenge := ""
 		for _, part := range strings.Split(challengeNTLM, ",") {
@@ -154,15 +148,30 @@ func (d *Dialer) DoHTTP(req *http.Request) (*http.Response, error) {
 					authDomain = chDetails.TargetName
 				}
 				type3 := auth.CreateAuthenticateMessage(authDomain, cleanUser, account.Password, "UNITUNNEL-PC", chDetails.ServerChallenge, chDetails.TargetInfo)
-				return send("NTLM " + type3)
+				outReq2 := prepareReq("NTLM " + type3)
+				if err := outReq2.WriteProxy(conn); err == nil {
+					resp2, err := http.ReadResponse(bufr, outReq2)
+					if err == nil {
+						resp2.Body = &connClosingBody{ReadCloser: resp2.Body, conn: conn}
+						return resp2, nil
+					}
+				}
 			}
 		}
 	}
 
-	// Basic fallback.
+	// Basic fallback: retry with basic credentials if requested
 	if account != nil && cleanUser != "" && strings.Contains(strings.ToUpper(challengeNTLM), "BASIC") {
-		return send(basicAuth())
+		outReqBasic := prepareReq(basicAuth())
+		if err := outReqBasic.WriteProxy(conn); err == nil {
+			respBasic, err := http.ReadResponse(bufr, outReqBasic)
+			if err == nil {
+				respBasic.Body = &connClosingBody{ReadCloser: respBasic.Body, conn: conn}
+				return respBasic, nil
+			}
+		}
 	}
 
-	return nil, fmt.Errorf("el proxy %s rechazó la petición HTTP (407) y no ofreció un método de autenticación soportado", d.ProxyAddress())
+	_ = conn.Close()
+	return nil, fmt.Errorf("el proxy %s rechazó la petición HTTP (407) y no completó la autenticación", d.ProxyAddress())
 }
