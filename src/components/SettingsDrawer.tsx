@@ -576,11 +576,12 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
                   <label className="text-slate-400 block mb-1">Modo de Captura:</label>
                   <select
                     value={cfg.capture_mode}
-                    onChange={(e) => setCfg({ ...cfg, capture_mode: e.target.value as 'tun' | 'system_proxy' })}
+                    onChange={(e) => setCfg({ ...cfg, capture_mode: e.target.value as 'tun' | 'system_proxy' | 'chaining' })}
                     className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-cyan-500"
                   >
                     <option value="tun">tun (Adaptador Wintun L3 completo - Captura todo el sistema)</option>
                     <option value="system_proxy">system_proxy (Solo proxy del sistema - No requiere Wintun)</option>
+                    <option value="chaining">chaining (Modo Encadenamiento - Para Proxifier y Psiphon)</option>
                   </select>
                 </div>
 

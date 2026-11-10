@@ -54,6 +54,9 @@ type Config struct {
 	AutoCheckQuota        bool   `json:"auto_check_quota"`
 	QuotaCheckIntervalMin int    `json:"quota_check_interval_min"`
 
+	// Chaining settings (Proxifier / Psiphon / External VPN)
+	ChainingPsiphonPort int `json:"chaining_psiphon_port"`
+
 	// Windows system integration
 	StartMinimized bool `json:"start_minimized"`
 	AutoStart      bool `json:"auto_start"`
@@ -91,10 +94,11 @@ func DefaultConfig() *Config {
 			"172.16.0.0/12",
 			"192.168.0.0/16",
 		},
-		NetworkMode:    "uci_cable",
-		StartMinimized: false,
-		AutoStart:      false,
-		AlwaysOnTop:    false,
+		NetworkMode:         "uci_cable",
+		ChainingPsiphonPort: 10808,
+		StartMinimized:      false,
+		AutoStart:           false,
+		AlwaysOnTop:         false,
 	}
 }
 
@@ -125,7 +129,7 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("el puerto SOCKS5 y el HTTP local no pueden ser el mismo (%d)", c.LocalSocksPort)
 	}
 
-	if c.CaptureMode != "" && c.CaptureMode != "tun" && c.CaptureMode != "system_proxy" {
+	if c.CaptureMode != "" && c.CaptureMode != "tun" && c.CaptureMode != "system_proxy" && c.CaptureMode != "chaining" {
 		return fmt.Errorf("modo de captura desconocido: %q", c.CaptureMode)
 	}
 

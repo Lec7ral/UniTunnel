@@ -12,6 +12,7 @@ import (
 	"unitunnel/pkg/autostart"
 	"unitunnel/pkg/config"
 	"unitunnel/pkg/network"
+	"unitunnel/pkg/proxifier"
 	"unitunnel/pkg/quota"
 	"unitunnel/pkg/sysproxy"
 	"unitunnel/pkg/traffic"
@@ -248,6 +249,13 @@ func (s *AppService) SetNetworkMode(mode string) error {
 			_ = s.StopTunnel()
 		}
 		s.AddLog("RED", "✓ Modo Directo: Métricas automáticas restauradas en Windows.")
+	case string(network.ModeChaining):
+		_ = sysproxy.DisableSystemProxy()
+		s.mu.Lock()
+		s.cfg.CaptureMode = "chaining"
+		_ = config.SaveConfig(s.cfg)
+		s.mu.Unlock()
+		s.AddLog("RED", "✓ Modo Encadenamiento: Prioridad Ethernet para 10.0.0.1:8080. Proxy de sistema deshabilitado y Wintun desactivado para control total de Proxifier y Psiphon.")
 	}
 
 	if s.onNetworkModeChange != nil {
@@ -312,8 +320,8 @@ func (s *AppService) StartTunnel() error {
 	}
 	s.mu.Unlock()
 
-	// If capture mode is system_proxy or uci_cable, configure Windows system proxy
-	if cfg.CaptureMode == "system_proxy" || cfg.NetworkMode == "uci_cable" {
+	// If capture mode is system_proxy or uci_cable (and not chaining), configure Windows system proxy
+	if (cfg.CaptureMode == "system_proxy" || cfg.NetworkMode == "uci_cable") && cfg.CaptureMode != "chaining" && cfg.NetworkMode != "chaining" {
 		if err := sysproxy.EnableSystemProxy(cfg.LocalHTTPPort, cfg.LocalSocksPort); err != nil {
 			s.AddLog("RED", fmt.Sprintf("⚠ No se pudo activar el proxy del sistema: %v", err))
 		}
@@ -749,3 +757,16 @@ func (s *AppService) IsHotspotForced() bool {
 	defer s.mu.Unlock()
 	return s.hotspotForced
 }
+
+// ExportProxifierProfile produces an XML configuration profile (.ppx) for Proxifier
+// with UniTunnel SOCKS5, Psiphon SOCKS5, and automatic routing loop prevention.
+func (s *AppService) ExportProxifierProfile(psiphonPort int) string {
+	s.mu.Lock()
+	socksPort := s.cfg.LocalSocksPort
+	if psiphonPort <= 0 {
+		psiphonPort = s.cfg.ChainingPsiphonPort
+	}
+	s.mu.Unlock()
+	return proxifier.GenerateProfile(socksPort, psiphonPort)
+}
+

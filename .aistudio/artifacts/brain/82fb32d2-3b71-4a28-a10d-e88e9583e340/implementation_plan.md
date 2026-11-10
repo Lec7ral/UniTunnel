@@ -1,164 +1,122 @@
-# UniTunnel — Port para Android con Wails v3
+# Modo de Encadenamiento UniTunnel: Proxifier, Psiphon y VPNs Externas
 
-Plan de arquitectura y hoja de ruta para Android enfocado en cuatro capacidades fundamentales:
-1. **Tunelización transparente** (`android.net.VpnService` con autenticación NTLMv2/Squid).
-2. **Sistema Multicuentas completo** (almacenamiento seguro, cambio rápido de usuario y consulta por cuenta).
-3. **Métricas de red en tiempo real** (velocímetro reactivo, latencia/ping, gráfica histórica con escala dinámica y estado de interfaces).
-4. **Consulta y monitoreo de Cuota UCI** (`cuota.uci.cu` con alertas de sobregiro y nivel de navegación).
-
-*(Quedan excluidas las características de escritorio irrelevantes como Hotspot Wi-Fi Direct y modificaciones al registro de Windows).*
+Este plan define la estrategia técnica y de interfaz para permitir la coexistencia y encadenamiento fluido entre **UniTunnel**, **Proxifier** y **Psiphon / VPNs externas**, eliminando los bloqueos por bucles de red en Windows.
 
 ---
 
-## Decisiones Críticas & Confirmadas por el Usuario
+## User Review & Critical Decisions
 
 > [!IMPORTANT]
-> **Alcance Requerido:**
-> - **Multicuentas:** Mantener la capacidad total de agregar, editar, eliminar y alternar entre múltiples credenciales universitarias directamente desde la pantalla principal, sincronizando la cuota con la cuenta activa.
-> - **Métricas de Red:** Conservar el velocímetro en vivo (`formatSpeed`), la medición periódica de RTT/Ping hacia el Squid (`10.0.0.1`), la gráfica de barras con techo dinámico adaptativo y la detección de interfaz activa (Wi-Fi, Datos Móviles o Ethernet USB-C).
-> - **Tunelización VpnService:** Enrutamiento transparente a nivel de sistema sin requerir privilegios de root, evitando bucles de conexión mediante `vpnService.protect()`.
+> **Decisión confirmada por el usuario:**
+> 1. **Flujo de tráfico multietapa:** Integración para canalizar tráfico a través de **UniTunnel** (autenticación NTLMv2 ante Squid UCI `10.0.0.1:8080`), **Psiphon** (túnel SSH/VPN hacia el exterior de Cuba) y **Proxifier** (enrutador selectivo de aplicaciones en Windows).
+> 2. **Comportamiento del adaptador Wintun:** En el modo de encadenamiento, **Wintun se desactiva automáticamente**. UniTunnel opera como un *puente proxy local ultraligero* (`127.0.0.1:8081` HTTP y `127.0.0.1:1080` SOCKS5), permitiendo que Proxifier y Psiphon gestionen la captura de sockets sin colisiones de controladores WFP/L3.
+
+- **Puertos locales por defecto:** `127.0.0.1:8081` (HTTP para upstream de Psiphon) y `127.0.0.1:1080` (SOCKS5 para Proxifier).
+- **Exportador `.ppx`:** Generación y descarga directa de un perfil XML para Proxifier con reglas automáticas de exclusión (evitando bucles de enrutamiento con `unitunnel.exe` y `10.0.0.1:8080`).
 
 ---
 
-## 1. Visión General & Capacidades Principales
+## 1. Overview & Core Concept
 
-### A. Tunelización Transparente (Android VPN)
-- Intercepta el tráfico TCP/UDP del dispositivo a través de `VpnService` y lo canaliza hacia el motor `tun2socks` en Go.
-- Negocia automáticamente la autenticación NTLMv2 con el proxy Squid de la universidad (`10.0.0.1:8080`) sin que las aplicaciones del móvil requieran configuración manual.
+### El Problema Técnico Actual
+Cuando se ejecutan UniTunnel (en modo TUN) y Proxifier simultáneamente:
+1. Proxifier (capa 4/7 WFP) intercepta los paquetes generados por `tun2socks.exe` y `unitunnel.exe`.
+2. Al reenviarlos de vuelta al túnel o a la misma interfaz, se produce un **bucle infinito de enrutamiento** (routing loop).
+3. Ambos programas intentan forzar la pasarela por defecto (Default Gateway) y resolver DNS de formas incompatibles, bloqueando la conexión.
 
-### B. Sistema Multicuentas Integral
-- **Gestión de Cuentas:** Lista configurable de credenciales universitarias (`username`, `domain`, `password`, `name`).
-- **Selector Rápido en Pantalla Principal:** Menú desplegable táctil para cambiar la cuenta activa en un toque.
-- **Persistencia Segura:** Guardado local seguro del fichero de configuración (`config.json`).
-- **Sincronización Inmediata:** Al cambiar de cuenta, el túnel actualiza las credenciales de autenticación y refresca automáticamente la cuota correspondiente a ese usuario.
-
-### C. Métricas de Red & Telemetría en Vivo
-- **Velocímetro en Tiempo Real:** Cálculo instantáneo de velocidad de descarga y subida en KB/s o MB/s.
-- **Gráfica de Tráfico con Techo Dinámico:** Historial de 16 muestras con barras reactivas que ajustan su escala proporcionalmente al consumo reciente (evitando barras vacías en tráfico bajo).
-- **Latencia / Ping Probe:** Medición periódica de RTT en milisegundos hacia el servidor proxy para informar de la calidad del enlace.
-- **Detección de Interfaces Móviles:** Identificación del medio de conexión activo (Wi-Fi de la facultad, conexión de datos móviles o adaptador Ethernet USB-C).
-
-### D. Inspector y Monitor de Cuota UCI
-- Lectura y parseo del portal `https://cuota.uci.cu/`.
-- Cálculo de megabytes consumidos, cuota asignada, porcentaje de uso y detección de nivel (`Nacional`, `Internet`).
-- Detección precisa de estado de **Sobregiro** con indicador fucsia y megabytes excedentes.
+### La Solución: "Modo Encadenamiento" (Chaining Mode)
+UniTunnel introduce un nuevo perfil de captura y red:
+* **UniTunnel como Puente NTLMv2:** Recibe tráfico no autenticado en `127.0.0.1:8081` / `1080`, le inyecta la autenticación NTLMv2 de la UCI y lo entrega a Squid (`10.0.0.1:8080`).
+* **Psiphon como Túnel Exterior:** Se configura con Upstream Proxy hacia UniTunnel (`127.0.0.1:8081`). Al tener credenciales válidas provistas por UniTunnel, Psiphon logra atravesar el Squid de la UCI y conectarse a sus servidores en el extranjero.
+* **Proxifier como Enrutador Granular:** Permite al usuario enviar aplicaciones específicas (juegos, Discord, navegador) a través de Psiphon, mientras que las páginas de la universidad (`*.uci.cu`) van directo o a través de UniTunnel.
 
 ---
 
-## 2. Experiencia de Usuario & Diseño Visual en Android
+## 2. User Experience & Visual Design
 
-```
-┌────────────────────────────────────────────────────────┐
-│  ● UniTunnel                           [Ajustes] [Logs]│
-│  ────────────────────────────────────────────────────  │
-│                                                        │
-│                    ┌───────────┐                       │
-│                    │     ⏻     │                       │
-│                    │ CONECTADO │                       │
-│                    └───────────┘                       │
-│              ● Túnel Seguro Activo · 24ms              │
-│                                                        │
-│  ┌──────────────────────────────────────────────────┐  │
-│  │ 👤 Juan Pérez (Activa)           [ 3 cuentas ▾ ] │  │
-│  │    juan.perez@uci.cu                             │  │
-│  └──────────────────────────────────────────────────┘  │
-│                                                        │
-│  ┌──────────────────────────────────────────────────┐  │
-│  │ 🎛 Cuota UCI [Internet]      340.2 MB / 1000.0 MB │  │
-│  │ [████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░] 34%   │  │
-│  └──────────────────────────────────────────────────┘  │
-│                                                        │
-│  ┌──────────────────────────────────────────────────┐  │
-│  │ 📶 Tráfico de Red [Techo: 1.25 MB/s]    450 KB/s │  │
-│  │ ▅▆▇█▇▆▅▄▃▂ ▂▃▄▅                                  │  │
-│  └──────────────────────────────────────────────────┘  │
-└────────────────────────────────────────────────────────┘
-```
+### Nueva Sección: "Modo Encadenamiento" en UniTunnel
+1. **Selector de Modo en Pantalla Principal:**
+   - Adición del botón de modo `Encadenamiento (Proxifier / Psiphon)` en el selector de perfiles de red.
+   - Al seleccionarse, la interfaz informa claramente: *"Adaptador virtual desactivado. Proxies locales listos para encadenar con Proxifier y Psiphon."*
 
-### Adaptaciones Visuales Móviles
-- **Cabecera Simplificada:** Sin controles de ventana de escritorio (minimizar/cerrar), respetando el notch superior y la barra de navegación de gestos inferior (`safe-area-inset`).
-- **Selector de Cuentas Táctil:** Menú inferior o popover accesible con una sola mano para alternar cuentas sin tener que abrir el panel completo de Ajustes.
-- **Cajones Deslizables (Drawers):** Ajustes y Visor de Logs con soporte táctil fluido.
+2. **Panel / Drawer de Herramientas de Encadenamiento (`ChainingDrawer.tsx`):**
+   - **Diagrama Visual Interactivo:** Representación visual del flujo de datos:
+     `Tu Aplicación` ──> `Proxifier` ──> `Psiphon` ──> `UniTunnel (NTLMv2)` ──> `Squid UCI` ──> `Internet`
+   - **Datos de Conexión Rápidos:** Botones de "Copiar al portapapeles" para:
+     - Proxy HTTP Upstream (para Psiphon): `127.0.0.1:8081`
+     - Proxy SOCKS5 (para Proxifier / Navegador): `127.0.0.1:1080`
+   - **Botón "Descargar Perfil Proxifier (.ppx)":** Genera un archivo `.ppx` descargable listo para abrir en Proxifier con:
+     - Regla Direct: `unitunnel.exe`, `tun2socks.exe`, `10.0.0.1` -> Directo (sin loop).
+     - Regla UCI: `*.uci.cu`, `10.*.*.*` -> UniTunnel SOCKS5 (`127.0.0.1:1080`).
+     - Regla General: Tráfico externo -> Psiphon SOCKS5 (`127.0.0.1:10808` configurable).
+   - **Instrucciones Rápidas Paso a Paso:** Guía visual con los 3 pasos necesarios para conectar Psiphon con UniTunnel.
 
 ---
 
-## 3. Arquitectura Técnica en Android
+## 3. Key Product Decisions & Trade-Offs
 
-### Diagrama de Flujo y Componentes
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Aplicación Android (Wails v3)                │
-│                                                                 │
-│  ┌───────────────────────────────────────────────────────────┐  │
-│  │                 Frontend React + Tailwind                 │  │
-│  │  - Dashboard con Botón de Conexión y Ping                 │  │
-│  │  - Selector y Gestor Multicuentas (CRUD completo)         │  │
-│  │  - Métricas de Tráfico (Velocidad + Sparkline Dinámico)   │  │
-│  │  - Barra de Cuota UCI y Visualizador de Sobregiro         │  │
-│  └─────────────────────────────┬─────────────────────────────┘  │
-│                                │ @wailsio/runtime               │
-│                                ▼                                │
-│  ┌───────────────────────────────────────────────────────────┐  │
-│  │                    libwails.so (Go Core)                  │  │
-│  │                                                           │  │
-│  │   ┌────────────────────┐         ┌─────────────────────┐  │  │
-│  │   │     AppService     │         │  Traffic Monitor    │  │  │
-│  │   │  - Get/SaveConfig  │◄────────┤  - Ping Prober      │  │  │
-│  │   │  - Multicuentas    │         │  - Speed & MBs      │  │  │
-│  │   │  - Start/StopTunnel│         └─────────────────────┘  │  │
-│  │   └──────────┬─────────┘                                  │  │
-│  │              │                                            │  │
-│  │              ├───────────────────┐                        │  │
-│  │              ▼                   ▼                        │  │
-│  │   ┌────────────────────┐   ┌───────────────────────────┐  │  │
-│  │   │    Quota Client    │   │      tun2socks Engine     │  │  │
-│  │   │  - Auth en cuota   │   │  - Lee paquetes del TUN   │  │  │
-│  │   │  - Parser HTML/JSON│   │  - SOCKS5 / HTTP Proxy    │  │  │
-│  │   └──────────┬─────────┘   └─────────────┬─────────────┘  │  │
-│  │              │                           │                │  │
-│  │              │     ┌─────────────────────┴─────────────┐  │  │
-│  │              │     │ NTLMv2 Tunnel Connector (Squid)   │  │  │
-│  │              │     └─────────────────────┬─────────────┘  │  │
-│  └──────────────┼───────────────────────────┼────────────────┘  │
-│                 │                           │                   │
-│                 │     ┌─────────────────────▼─────────────┐     │
-│                 │     │ android.net.VpnService (Java/Kt)  │     │
-│                 │     │ - Descriptor TUN virtual          │     │
-│                 │     │ - vpnService.protect(socketFd)    │     │
-│                 │     └─────────────────────┬─────────────┘     │
-└─────────────────┼───────────────────────────┼───────────────────┘
-                  │                           │
-                  ▼                           ▼
-      ┌────────────────────────────────────────────────────────┐
-      │            Proxy Squid UCI (10.0.0.1:8080)             │
-      └───────────────────────────┬────────────────────────────┘
-                                  │
-                                  ▼
-                               Internet
-```
+| Decisión | Enfoque Seleccionado | Razón Técnica |
+| :--- | :--- | :--- |
+| **Coexistencia con Wintun** | Desactivar Wintun en Modo Encadenamiento | Proxifier y Psiphon ya manipulan rutas y sockets a nivel WFP/LSP. Intentar activar un TUN L3 simultáneamente causa colisión de pasarelas y congelamiento de sockets. |
+| **Generación de Perfil Proxifier** | Generador de XML `.ppx` estándar | Evita que el usuario tenga que configurar manualmente IPs, puertos y reglas de exclusión complejas donde un error genera bucles. |
+| **Monitoreo de Cuota en Chaining Mode** | Se mantiene activo en segundo plano | La consulta a `cuota.uci.cu` sigue funcionando mediante las credenciales activas del usuario a través del socket HTTP local. |
 
 ---
 
-## 4. Estrategia de Implementación por Fases
+## 4. Technical Architecture & Data Strategy
 
-### Fase 1: Desacoplamiento de Sistema en Go (`//go:build android`)
-- Separar en módulos específicos de compilación las funciones que tocan el Registro de Windows, elevación de privilegios UAC y comandos PowerShell de escritorio.
-- Adaptar `TrafficCounter` y `TrafficStats` en Go para reportar velocidad y RTT tanto en Windows como en Android sin alterar el contrato con la interfaz.
-- Asegurar que la estructura de cuentas (`accounts: UserAccount[]`) se guarde y cargue fielmente en el almacenamiento privado de la app en Android.
+### Diagrama de Flujo del Encadenamiento
 
-### Fase 2: Integración de `VpnService` y Loopback Protection
-- Crear el servicio Android `UniTunnelVpnService` que solicita la autorización del usuario y expone el descriptor TUN al backend Go.
-- Implementar la función de protección de sockets (`protect`) para las conexiones salientes hacia el Squid universitario (`10.0.0.1:8080`), previniendo bucles de enrutamiento.
+```
+┌──────────────────────────────────────────────────────────────┐
+│                    APLICACIONES DE WINDOWS                   │
+│          (Navegadores, Juegos, Telegram, Terminales)         │
+└──────────────────────────────┬───────────────────────────────┘
+                               │
+                               ▼
+┌──────────────────────────────────────────────────────────────┐
+│                   PROXIFIER (Controlador WFP)                │
+│    Regla UCI (*.uci.cu)          │   Regla General (Internet)│
+└──────────────┬───────────────────┼───────────────┬───────────┘
+               │                   │               │
+               ▼                   │               ▼
+┌──────────────────────────────┐   │   ┌───────────────────────┐
+│     UniTunnel SOCKS5         │   │   │     PSIPHON CLIENT    │
+│     (127.0.0.1:1080)         │   │   │   (SOCKS5 127.0.0.1)  │
+└──────────────┬───────────────┘   │   └───────────┬───────────┘
+               │                   │               │ Upstream Proxy
+               │                   │               ▼
+               │                   │   ┌───────────────────────┐
+               │                   │   │    UniTunnel HTTP     │
+               │                   │   │   (127.0.0.1:8081)    │
+               │                   │   └───────────┬───────────┘
+               │                   │               │
+               ▼                   ▼               ▼
+┌──────────────────────────────────────────────────────────────┐
+│           UNITUNNEL MOTOR NTLMv2 (pkg/auth/ntlm.go)          │
+│       Inyecta credenciales universitarias (Dominio UCI)       │
+└──────────────────────────────┬───────────────────────────────┘
+                               │ Conexión TCP autenticada
+                               ▼
+┌──────────────────────────────────────────────────────────────┐
+│                PROXY SQUID UCI (10.0.0.1:8080)               │
+└──────────────────────────────┬───────────────────────────────┘
+                               │
+                               ▼
+┌──────────────────────────────────────────────────────────────┐
+│             SERVIDORES EXTERNOS PSIPHON / INTERNET           │
+└──────────────────────────────────────────────────────────────┘
+```
 
-### Fase 3: Optimización de la Interfaz React para Móvil
-- Condicionar la cabecera: ocultar los botones de minimizar/cerrar cuando se ejecuta en Android.
-- Mantener y verificar el funcionamiento íntegro de:
-  - Selector y gestor multicuentas (añadir, editar, alternar y borrar).
-  - Velocímetro y gráfica sparkline con techo adaptativo.
-  - Medidor de cuota UCI y soporte de sobregiro.
-  - Cajón de logs de diagnóstico y cajón de ajustes.
+### Cambios a Implementar en el Código
 
-### Fase 4: Compilación y Verificación
-- Configuración de la compilación multiplataforma en Wails v3 para arquitecturas móviles (`arm64-v8a`, `x86_64`).
-- Verificación de la conexión en un solo toque, cambio dinámico de cuenta y actualización de métricas en tiempo real.
+1. **Backend Go (`unitunnel-go/`):**
+   * `pkg/config/config.go`: Agregar modo `"chaining"` en `CaptureMode` o `NetworkMode`.
+   * `pkg/service/app_service.go`: Manejar la inicialización en modo encadenamiento (arranca solo los servidores proxy SOCKS5 y HTTP con autenticación NTLMv2 sin instanciar Wintun ni tun2socks).
+   * `pkg/proxifier/ppx.go`: Nuevo módulo para generar el XML `.ppx` con las reglas de enrutamiento y exclusión para Proxifier.
+   * Exponer método en AppService: `ExportProxifierProfile(psiphonPort int) string`.
+
+2. **Frontend React (`src/`):**
+   * `src/components/ChainingDrawer.tsx`: Componente interactivo para configurar el encadenamiento, ver el estado de los puertos y descargar el archivo `.ppx`.
+   * `src/App.tsx`: Añadir la opción en el selector de modo de red y botón de acceso directo a la configuración de encadenamiento.
+   * `src/services/wailsBridge.ts`: Mapear la función de exportación del perfil `.ppx` y descarga en el navegador / Windows.

@@ -16,6 +16,7 @@ const (
 	ModeUCICable   NetworkModeType = "uci_cable"
 	ModeWiFiMobile NetworkModeType = "wifi_mobile"
 	ModeDirect     NetworkModeType = "direct"
+	ModeChaining   NetworkModeType = "chaining"
 )
 
 type InterfaceStatus struct {
@@ -53,7 +54,7 @@ func runPowerShell(script string) (string, error) {
 // - "direct": Restores AutomaticMetric Enabled on all adapters
 func ApplyNetworkMode(mode string) error {
 	switch mode {
-	case string(ModeUCICable):
+	case string(ModeUCICable), string(ModeChaining):
 		// Save the user's original metrics before touching them, so "direct"
 		// can restore them instead of guessing "automatic".
 		if err := persistMetricsStateIfMissing(); err != nil {

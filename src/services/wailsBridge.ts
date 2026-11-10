@@ -23,7 +23,7 @@ export interface UserAccount {
   password?: string;
 }
 
-export type NetworkMode = 'uci_cable' | 'wifi_mobile' | 'direct';
+export type NetworkMode = 'uci_cable' | 'wifi_mobile' | 'direct' | 'chaining';
 
 export interface AppConfig {
   proxy_host: string;
@@ -33,13 +33,14 @@ export interface AppConfig {
   accounts: UserAccount[];
   local_socks_port: number;
   local_http_port: number;
-  capture_mode: 'tun' | 'system_proxy';
+  capture_mode: 'tun' | 'system_proxy' | 'chaining';
   tun_name: string;
   tun_ipv4: string;
   tun_mask: string;
   tun_dns: string;
   bypass_routes: string[];
   network_mode: NetworkMode;
+  chaining_psiphon_port?: number;
   quota_url: string;
   auto_check_quota: boolean;
   quota_check_interval_min: number;
@@ -437,7 +438,13 @@ class WailsBridge {
     if (isWailsRuntime()) {
       try {
         await callWailsService<void>('SetNetworkMode', mode);
-        if (this.configCache) this.configCache = { ...this.configCache, network_mode: mode };
+        if (this.configCache) {
+          this.configCache = {
+            ...this.configCache,
+            network_mode: mode,
+            capture_mode: mode === 'chaining' ? 'chaining' : this.configCache.capture_mode,
+          };
+        }
         await this.fetchLogs();
         return true;
       } catch (err) {
@@ -447,7 +454,11 @@ class WailsBridge {
     }
 
     if (this.configCache) {
-      this.configCache = { ...this.configCache, network_mode: mode };
+      this.configCache = {
+        ...this.configCache,
+        network_mode: mode,
+        capture_mode: mode === 'chaining' ? 'chaining' : this.configCache.capture_mode,
+      };
     }
     this.addLog('RED', `Modo de red cambiado a: ${mode}`);
     return true;
@@ -650,6 +661,60 @@ class WailsBridge {
     if (isWailsRuntime()) {
       return callWailsService<void>('WindowHide');
     }
+  }
+
+  /**
+   * Generates a Proxifier XML Profile (.ppx) configured for UniTunnel and Psiphon.
+   */
+  public async exportProxifierProfile(psiphonPort = 10808): Promise<string> {
+    if (isWailsRuntime()) {
+      try {
+        const xml = await callWailsService<string>('ExportProxifierProfile', psiphonPort);
+        if (xml) return xml;
+      } catch (err) {
+        console.warn('Backend ExportProxifierProfile falló, usando generador cliente:', err);
+      }
+    }
+
+    const socksPort = this.configCache?.local_socks_port || 1080;
+    return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<ProxifierProfile version="101" platform="Windows" product_id="0" product_minver="310">
+  <Options>
+    <AutoModeDetection enabled="true"/>
+    <ViaProxy enabled="false"/>
+    <TryLocalDnsFirst enabled="false"/>
+  </Options>
+  <ProxyList>
+    <Proxy id="100" type="SOCKS5">
+      <Address>127.0.0.1</Address>
+      <Port>${socksPort}</Port>
+      <Options>48</Options>
+    </Proxy>
+    <Proxy id="101" type="SOCKS5">
+      <Address>127.0.0.1</Address>
+      <Port>${psiphonPort}</Port>
+      <Options>48</Options>
+    </Proxy>
+  </ProxyList>
+  <ChainList/>
+  <RuleList>
+    <Rule enabled="true">
+      <Name>Prevencion de Bucles (UniTunnel y Psiphon)</Name>
+      <Applications>unitunnel.exe; tun2socks.exe; psiphon3.exe; psiphon.exe</Applications>
+      <Targets>10.0.0.1; 127.0.0.1; localhost</Targets>
+      <Action type="Direct"/>
+    </Rule>
+    <Rule enabled="true">
+      <Name>Servicios e Intranet UCI</Name>
+      <Targets>*.uci.cu; 10.*; 172.16.*; 192.168.*</Targets>
+      <Action type="Proxy">100</Action>
+    </Rule>
+    <Rule enabled="true">
+      <Name>Internet General (Psiphon)</Name>
+      <Action type="Proxy">101</Action>
+    </Rule>
+  </RuleList>
+</ProxifierProfile>`;
   }
 }
 

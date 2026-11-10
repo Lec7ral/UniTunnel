@@ -111,12 +111,16 @@ func setupPlatformTray(app *application.App, win *application.WebviewWindow, app
 	var uciCableItem *application.MenuItem
 	var wifiMobileItem *application.MenuItem
 	var directItem *application.MenuItem
+	var chainingItem *application.MenuItem
 
 	updateModeChecks := func(currentMode string) {
 		if uciCableItem != nil && wifiMobileItem != nil && directItem != nil {
 			uciCableItem.SetChecked(currentMode == string(network.ModeUCICable))
 			wifiMobileItem.SetChecked(currentMode == string(network.ModeWiFiMobile))
 			directItem.SetChecked(currentMode == string(network.ModeDirect))
+			if chainingItem != nil {
+				chainingItem.SetChecked(currentMode == string(network.ModeChaining))
+			}
 		}
 	}
 
@@ -128,6 +132,11 @@ func setupPlatformTray(app *application.App, win *application.WebviewWindow, app
 	wifiMobileItem = networkModeSubmenu.AddRadio("Datos Móviles / Wi-Fi (Prioridad Wi-Fi)", cfg.NetworkMode == string(network.ModeWiFiMobile))
 	wifiMobileItem.OnClick(func(ctx *application.Context) {
 		go func() { _ = appService.SetNetworkMode(string(network.ModeWiFiMobile)) }()
+	})
+
+	chainingItem = networkModeSubmenu.AddRadio("Encadenamiento (Proxifier / Psiphon)", cfg.NetworkMode == string(network.ModeChaining))
+	chainingItem.OnClick(func(ctx *application.Context) {
+		go func() { _ = appService.SetNetworkMode(string(network.ModeChaining)) }()
 	})
 
 	directItem = networkModeSubmenu.AddRadio("Directo / Automático (Sin Proxy)", cfg.NetworkMode == string(network.ModeDirect))

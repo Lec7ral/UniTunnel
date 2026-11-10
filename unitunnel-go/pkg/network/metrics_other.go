@@ -8,6 +8,7 @@ const (
 	ModeUCICable   NetworkModeType = "uci_cable"
 	ModeWiFiMobile NetworkModeType = "wifi_mobile"
 	ModeDirect     NetworkModeType = "direct"
+	ModeChaining   NetworkModeType = "chaining"
 )
 
 type InterfaceStatus struct {

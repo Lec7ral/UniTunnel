@@ -13,6 +13,7 @@ import {
   Code,
   Minus,
   X,
+  Link2,
 } from 'lucide-react';
 import {
   bridge,
@@ -26,6 +27,7 @@ import {
 import { SettingsDrawer } from './components/SettingsDrawer';
 import { LogsDrawer } from './components/LogsDrawer';
 import { QuotaInspectorModal } from './components/QuotaInspectorModal';
+import { ChainingDrawer } from './components/ChainingDrawer';
 import { reconnectReasons, reconnectWarning } from './services/configDiff';
 
 function formatSpeed(mbPerSec: number): string {
@@ -47,6 +49,7 @@ export default function App() {
   const [accountDropdownOpen, setAccountDropdownOpen] = useState(false);
   const accountDropdownRef = useRef<HTMLDivElement>(null);
   const [logsOpen, setLogsOpen] = useState(false);
+  const [chainingOpen, setChainingOpen] = useState(false);
   const [logs, setLogs] = useState<string[]>([]);
   const [backendError, setBackendError] = useState<string | null>(null);
 
@@ -189,6 +192,8 @@ export default function App() {
       notice = 'Prioridad asignada al Cable UCI (Ethernet métrica 10, Wi-Fi 100).';
     } else if (mode === 'wifi_mobile') {
       notice = 'Prioridad Wi-Fi (métrica 10). Puedes usar los datos móviles sin desconectar el cable.';
+    } else if (mode === 'chaining') {
+      notice = 'Modo Encadenamiento activo: Wintun y proxy de sistema desactivados. Listo para Proxifier y Psiphon.';
     } else {
       notice = 'Métricas de red automáticas restauradas en Windows.';
     }
@@ -387,7 +392,7 @@ export default function App() {
       {/* Unified Android App Container */}
       <main className="flex-1 w-full max-w-md mx-auto flex flex-col p-4 justify-between overflow-y-auto [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
         
-        {/* Top Action Bar: Settings & Logs */}
+        {/* Top Action Bar: Settings, Chaining & Logs */}
         <div className="flex items-center justify-between py-2 border-b border-slate-900/80">
           <button
             onClick={() => openSettings('proxy')}
@@ -396,6 +401,15 @@ export default function App() {
           >
             <Settings className="w-3.5 h-3.5 text-cyan-400" />
             <span>Ajustes</span>
+          </button>
+
+          <button
+            onClick={() => setChainingOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-200 border border-slate-800 transition text-xs font-semibold shadow-sm"
+            title="Encadenamiento con Proxifier y Psiphon"
+          >
+            <Link2 className="w-3.5 h-3.5 text-cyan-400" />
+            <span>Encadenar</span>
           </button>
 
           <button
@@ -471,16 +485,17 @@ export default function App() {
           {/* Network Mode Selector */}
           <div className="bg-slate-900/60 border border-slate-800/80 rounded-xl p-2.5 flex items-center justify-between text-xs">
             <span className="text-slate-400 text-[11px] pl-1 font-medium">Modo de Red:</span>
-            <div className="flex gap-1">
+            <div className="flex gap-1 overflow-x-auto">
               {[
-                { id: 'uci_cable', label: isMobile ? 'Cable / USB' : 'Cable UCI' },
-                { id: 'wifi_mobile', label: isMobile ? 'Wi-Fi UCI' : 'Wi-Fi / Móvil' },
+                { id: 'uci_cable', label: isMobile ? 'Cable' : 'Cable UCI' },
+                { id: 'wifi_mobile', label: isMobile ? 'Wi-Fi' : 'Wi-Fi' },
+                { id: 'chaining', label: 'Encadenar' },
                 { id: 'direct', label: 'Directo' },
               ].map((m) => (
                 <button
                   key={m.id}
                   onClick={() => handleSelectNetworkMode(m.id as NetworkMode)}
-                  className={`px-2.5 py-1 rounded-lg text-[11px] font-medium transition ${
+                  className={`px-2 py-1 rounded-lg text-[10px] sm:text-[11px] font-medium transition whitespace-nowrap ${
                     config.network_mode === m.id
                       ? 'bg-cyan-600 text-white shadow'
                       : 'bg-slate-950 text-slate-400 hover:text-slate-200 hover:bg-slate-800'
@@ -706,6 +721,13 @@ export default function App() {
       </main>
 
       {/* Slide-over Drawers */}
+      <ChainingDrawer
+        isOpen={chainingOpen}
+        onClose={() => setChainingOpen(false)}
+        config={config}
+        onConfigChange={handleSaveConfig}
+      />
+
       <SettingsDrawer
         isOpen={settingsOpen}
         onClose={() => setSettingsOpen(false)}
